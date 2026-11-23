@@ -1,0 +1,174 @@
+// node browser-test.mjs: a smoke test of the editor in headless Chrome, on a fixture page of its own (not the demo).
+// Needs playwright-core and a Chrome: `npm i && npx playwright install chromium-headless-shell`,
+// or point PLAYWRIGHT_CORE at a playwright-core folder and CHROME at a chrome(-headless-shell) binary.
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+
+const here = path.dirname(new URL(import.meta.url).pathname);
+const require = createRequire(process.env.PLAYWRIGHT_CORE ? path.join(process.env.PLAYWRIGHT_CORE, 'x') : import.meta.url);
+const { chromium } = require('playwright-core');
+
+const FIXTURE = {
+    version: 1,
+    _show: 'colors',
+    nav: { how: 'How it works' },
+    how: { title: 'How it works', p1: 'The agent wrote this.', p2: ['There are {n} things, ', { me: 'I promise' }, '.'], note: 'Shown only sometimes.' },
+};
+const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title>
+<link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
+<div data-slop-meter></div><nav><a href="#" data-slop="nav.how"></a></nav>
+<h1 data-slop="how.title"></h1><p data-slop="how.p1"></p><p data-slop="how.p2"></p><p id="note"></p>
+<script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
+<script src="slop.js"></script>
+<script>
+  Slop.vars.n = 7;
+  let showNote = false;
+  const draw = () => { const n = document.getElementById('note'); if (showNote) n.dataset.slop = 'how.note'; else { n.removeAttribute('data-slop'); n.textContent = ''; } Slop.fill(); };
+  Slop.reveal('how.note', () => { showNote = true; draw(); return () => { showNote = false; draw(); }; });
+  Slop.onChange(draw);
+  Slop.start(location.protocol === 'file:' ? { edit: 'local' } : {});
+</script></body></html>`;
+
+async function fixture() {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-editor-'));
+    await Promise.all(['slop.js', 'slop.css'].map((f) => copyFile(path.join(here, f), path.join(dir, f))));
+    await writeFile(path.join(dir, 'page.html'), page(FIXTURE));
+    return path.join(dir, 'page.html');
+}
+const block = async (file) => JSON.parse(/id="slop-text">([\s\S]*?)<\/script>/.exec(await readFile(file, 'utf8'))[1]);
+
+const browser = await chromium.launch(process.env.CHROME ? { executablePath: process.env.CHROME } : {});
+const errors = [];
+async function open(url) {
+    const p = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+    p.on('pageerror', (e) => errors.push(e.message));
+    p.on('console', (m) => { if (m.type() === 'warning' || (m.type() === 'error' && !/409/.test(m.text()))) errors.push(m.text()); });
+    await p.goto(url);
+    return p;
+}
+const get = (p, at) => p.evaluate((x) => Slop.get(x), at);
+const field = (at) => `.sp-field[data-path="${at}"]`;
+// the All tab, with every section open
+async function all(p) {
+    await p.click('.sp-tabs [data-tab="all"]');
+    for (const det of await p.$$('.sp-group:not([open]) summary .sp-gname')) await det.click();
+}
+let passed = 0;
+async function check(name, fn) {
+    await fn();
+    passed++;
+    console.log(`ok - ${name}`);
+}
+
+try {
+    // ---------- the browser editor (file://), which saves in localStorage ----------
+    const local = await fixture();
+    let p = await open(`file://${local}`);
+
+    await check('readers see what the page chose; the meter starts on', async () => {
+        assert.equal(await p.$eval('.slop-meter', (m) => m.dataset.show), 'colors');
+        assert.ok(await p.evaluate(() => document.documentElement.classList.contains('slop-on')));
+        assert.ok((await p.textContent('.slop-legend')).includes('%'));
+    });
+
+    await p.click('.slop-edit-btn');
+    await check('the editor opens on repeated text that still has slop', async () => {
+        assert.equal(await p.$eval('.sp-tabs [aria-selected="true"]', (t) => t.dataset.tab), 'repeats');
+    });
+
+    await all(p);
+    await check('a copy\'s switch changes that copy only, and says so', async () => {
+        await p.click(`${field('nav.how')} .sp-toggle`);
+        assert.deepEqual(await get(p, 'nav.how'), [{ ok: 'How it works' }]);
+        assert.equal(await get(p, 'how.title'), 'How it works');
+        assert.match(await p.textContent(`${field('nav.how')} .sp-hint`), /Only this copy changed/);
+        await p.click(`${field('nav.how')} .sp-hint button`);
+        assert.deepEqual(await get(p, 'how.title'), [{ ok: 'How it works' }]);
+    });
+
+    await check('⌘Z with no text focused undoes the last switch', async () => {
+        await p.click(`${field('how.p1')} .sp-toggle`);
+        assert.deepEqual(await get(p, 'how.p1'), [{ ok: 'The agent wrote this.' }]);
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('typing is mine; ⌘Z in the text gives the words back to the AI', async () => {
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(4, 9)); // "agent"
+        await p.keyboard.insertText('machine');
+        assert.deepEqual(await get(p, 'how.p1'), ['The ', { me: 'machine' }, ' wrote this.']);
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('marking a selection as a category', async () => {
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(0, 3));
+        await p.locator('.sp-assign .sp-as', { hasText: 'Data' }).click();
+        assert.deepEqual(await get(p, 'how.p1'), [{ data: 'The' }, ' agent wrote this.']);
+    });
+
+    await check('Revert goes back to the last save; Save saves', async () => {
+        assert.match(await p.textContent('.sp-save'), /^Save \d/);
+        await p.locator(`${field('how.p1')} .sp-revert`).click();
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        await p.click('.sp-save');
+        assert.equal(await p.textContent('.sp-save'), 'Saved');
+        await p.reload();
+        assert.deepEqual(await get(p, 'nav.how'), [{ ok: 'How it works' }]); // kept by the browser
+    });
+
+    await check('a hidden text is shown on the page while it\'s edited', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        assert.equal(await p.textContent('#note'), '');
+        await p.click(`${field('how.note')} .sp-unseen`);
+        assert.equal(await p.textContent('#note'), 'Shown only sometimes.');
+        await p.click(`${field('how.p1')} textarea`);
+        assert.equal(await p.textContent('#note'), '');
+    });
+    await p.close();
+
+    // ---------- the file editor, under `slop-editor edit` ----------
+    const file = await fixture();
+    const server = spawn(process.execPath, [path.join(here, 'cli.mjs'), 'edit', file, '--no-open'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const url = await new Promise((resolve, reject) => {
+        server.stdout.on('data', (d) => { const m = /http:\/\/\S+/.exec(String(d)); if (m) resolve(m[0]); });
+        server.on('exit', () => reject(new Error('the edit server stopped')));
+    });
+    try {
+        p = await open(url);
+        const stale = await open(url);
+        await check('Save writes the file and bumps its version; a stale tab can\'t overwrite it', async () => {
+            await p.click('.slop-edit-btn');
+            await all(p);
+            await p.click(`${field('how.p1')} .sp-toggle`);
+            assert.equal((await block(file)).version, 1); // nothing written before Save
+            await p.keyboard.press('Meta+s');
+            await p.waitForFunction(() => document.querySelector('.sp-save').textContent === 'Saved');
+            const saved = await block(file);
+            assert.equal(saved.version, 2);
+            assert.deepEqual(saved.how.p1, [{ ok: 'The agent wrote this.' }]);
+            await stale.click('.slop-edit-btn');
+            await all(stale);
+            await stale.click(`${field('how.title')} .sp-toggle`);
+            await stale.click('.sp-save');
+            await stale.waitForFunction(() => /Couldn't save/.test(document.querySelector('.sp-status').textContent));
+            assert.equal((await block(file)).version, 2);
+        });
+    } finally {
+        server.kill();
+    }
+
+    assert.deepEqual(errors, [], 'no page errors or warnings');
+    console.log(`\n${passed} passed`);
+} finally {
+    await browser.close();
+}

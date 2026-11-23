@@ -1,0 +1,120 @@
+# Slop editor: how it's built
+
+For contributors and their agents. [README.md](README.md) is the reference for people using it. This is how the code works and why it works that way.
+
+## Files
+
+| File | What |
+|---|---|
+| `slop.js` | Everything that runs in the page, as one global `Slop`: the format (pure functions, also used by Node), the Slop-o-meter, the editor. Outside a browser it returns only the format functions. |
+| `slop.css` | The meter's and the editor's styles. Category colors aren't here: slop.js writes them into a `<style id="slop-colors">` at runtime. |
+| `cli.mjs` | `slop-editor install / sync / edit / check`. No dependencies. It loads the format functions from slop.js itself. |
+| `index.html` | The demo and landing page. It links `slop.js` and `slop.css` instead of inlining them. |
+| `test.mjs` | Unit tests of the format. |
+| `browser-test.mjs` | A smoke test of the editor in headless Chrome, on a fixture page of its own (not the demo). |
+| `skills/slop-editor/SKILL.md`, `.claude-plugin/` | The Claude Code plugin: one skill, the plugin and marketplace manifests, and an icon. |
+
+## Words
+
+- **Block**: the `<script type="application/json" id="slop-text">` in the page that holds every text.
+- **Text**: one thing the page shows, at a dotted path (`intro.p1`). In the block it's a string or a list of pieces.
+- **Piece**: a stretch of a text by one author: a string (the AI's) or `{"<author>": "..."}`.
+- **Group**: an object of texts, in reading order. The editor calls the top-level ones sections. Groups can nest.
+- **Category** (or author): who wrote a piece. The built-ins are `ai`, `me`, `ok` and `data`, and a page can add its own.
+- **Slop**: the AI's words that nobody approved (`ai`). Only ever that.
+- **Approve / unslop**: `ai` → `ok`, with the words unchanged. **Reslop** takes it back: `ok` → `ai`.
+- **Mine**: `me` plus `ok`, the share the editor calls yours. Data counts as neither.
+- **Copy**: one of several texts with the same words (a repeat).
+
+## The format
+
+```json
+{
+  "version": 3,
+  "_categories": { "bob": { "label": "Bob", "color": "#2b9fc0" }, "ai": { "color": "#d01f4a" } },
+  "_show": "pie",
+  "intro": {
+    "title": "How it works",
+    "p1": ["The agent wrote this. ", { "me": "I wrote this. " }, { "bob": "Bob added this." }]
+  }
+}
+```
+
+- **`version`** is a number. Every save through `slop-editor edit` bumps it, and a save whose `version` isn't the file's current one is refused (409). Anything that writes the block by hand must bump it too, so an open editor fails instead of overwriting newer words.
+- **`version` and top-level keys starting with `_` aren't text.**
+  - `_categories`: `{"<id>": {"label"?, "color"?}}`, the page's own categories plus color overrides for the built-ins.
+  - `_show`: `"pie"` or `"colors"`. Absent means readers see nothing.
+- **A piece object's first key is its author.** Other keys are ignored. An author missing from `_categories` still works: it's labeled with its id and colored from the palette.
+- **Authorship is per character.** Every operation turns the value into one author per character (`authorsByChar`), works on that, and rebuilds the pieces with `fromChars`. That merges neighbours by the same author and returns a plain string when it's all AI. Hand-written values don't need to be tidy; the editor's output always is.
+- **Markup is parsed over the whole text, not per piece**, so `**` opened in one piece can close in another. Markup characters, spaces and filled-in values don't count toward shares. The markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]`, `{name}`, and `\` to escape.
+- **`{name}`** is filled from `Slop.vars`. A string or number is a fact, shown as data. `{html, data}` gives HTML, and it's shown as data only when `data` is true; otherwise it takes the color of whoever wrote the `{name}`.
+- **Repeats** are texts whose words match once whitespace is collapsed (`wordsOf`). A text with fewer than 3 word characters, or made only of data, doesn't count.
+- **Percentages** are rounded one by one, so they can add up to 99 or 101.
+
+## slop.js, top to bottom
+
+It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- … ---------- */` comments.
+
+| Section | What's in it |
+|---|---|
+| the format | The pure functions, up to `const core`: `plain`, `applyEdit`, `reattribute`, `unslop`/`reslop`, `assign`, `runs`, `render`, `readable`, `makeup`, `share`, `percent`, `repeats`. Outside a browser, `Slop` is only these. The CLI and `test.mjs` load slop.js with `new Function`. |
+| the block | Parsing the block, `get`/`set`/`entries`, `html`/`words` (which also record that a text is on the page), `fill`, `reveal`, `onChange`. |
+| categories and their colors | `colorOf`, `categories`, the generated stylesheet, the pies. |
+| colors follow the page | Reads the page's actual background and sets `.slop-dark` on `<html>`. |
+| Slop-o-meter | The readers' switch, pie and legend, and `_show`. |
+| the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
+| the end | `refresh`, `remove`, `start`, and the public object. |
+
+Read `applyEdit` and `runs` first. Everything else builds on them.
+
+## How the editor gets the words back into the file
+
+- `start()` picks the editor:
+  - On `localhost`, `127.0.0.1` or `[::1]`, it sends `GET /__slop`. The answer `slop-editor` means the page is served by `slop-editor edit`, so the editor saves into the file.
+  - Otherwise, with `edit: 'local'`, it saves in `localStorage`, keyed by the page's path. A saved copy is used only if it was based on the page's current `version`.
+  - Otherwise there's no editor.
+- `slop-editor edit` serves only the page's folder, on 127.0.0.1. `POST /__slop` takes the whole block. Saves run one at a time and are written to a `.saving` file that's then renamed over the page.
+- `slop-editor edit` starts at port 5178 and moves on from any port where something already answers, on 127.0.0.1 or on ::1. Checking both matters because `localhost` can mean either, and dev servers such as Vite often listen on ::1 only.
+- `install` adds `<style id="slop-css">`, `<script id="slop-js">` and the block. `sync` rewrites what's between the first two markers.
+
+## Design principles
+
+Keep these unless the maintainer changes them.
+
+1. **Slop is only ever the AI's words.** Extra categories are for other people (a co-author, an editor, a source), never kinds of slop. The tool is about who owns the words, not how good they are, and one meaning for "slop" keeps the number readers see honest.
+2. **The slop switch changes only approval.** Off approves the AI's words (`ai` → `ok`); on takes that back (`ok` → `ai`). It never touches what someone typed, so flipping it can't lose anyone's writing. Approved text has its own color (green).
+3. **Each copy of a repeated text keeps its own authorship.** Approving words in one place shouldn't approve them where nobody read them. In the **All** tab a copy's switch changes that copy only, and says so ("Only this copy changed… Change it too"). In the **Repeats** tab a card's switch and text change every copy, on purpose.
+4. **Readers see nothing unless the page chooses otherwise.** Agents install this on pages whose owners may not want it shown. The other choices are a pie chart, or colors (the pie plus a switch that colors the words). When a page shows colors, the switch starts on unless the reader turned it off. While the editor is open, the author always sees colors.
+5. **Saving is deliberate.** A Save button with a count (and ⌘S), Revert on each changed text, a prompt before leaving with unsaved changes, and no autosave. A save rewrites an HTML file that may be open elsewhere, so each write should be one someone chose, and Revert always has a fixed point to go back to.
+6. **Undo restores authorship too.** ⌘Z inside a text is the browser's undo, but the restored words get back their earlier authors (`applyEdit`'s `was`). Otherwise undoing a deletion would make the AI's words yours. ⌘Z elsewhere undoes the last switch, mark, revert or category deletion.
+7. **The editor opens where the work is**: on Repeats if a repeated text still has slop, else on Slop left if any text has slop, else on All. The tabs are ordered the same way.
+8. **Marking changes who wrote words, never the words.** Focus a text and a row of categories offers "Mark all as" or "Mark selection as". Deleting a category gives its words back to the AI.
+9. **No dependencies and no build.** Two files work in any page, and the CLI uses only Node's built-ins.
+10. **The demo page has exceptions that stay in `index.html`:**
+    - the Slop-o-meter has its own band at the top, with a 56px pie;
+    - the "Try it" note colors each category's share in that category's color (so those labels are in code), with a 44px pie beside it.
+
+    Don't move them into the library.
+
+## Gotchas
+
+- **Anything that disappears on blur has to wait for the click.** When the "Mark as" row and hints were removed on blur, the layout shifted under the pointer and clicks missed. They're now removed after the click lands (`afterClick`). Use that pattern for anything new that disappears on blur.
+- **Switches would slide on every redraw.** `render()` adds `.sp-still` for two frames to turn transitions off.
+- **The per-text ⌘Z history lives in the open editor.** It resets when a field is redrawn (switching tabs, or a switch in the Slop left tab).
+- **Once picked, a category has one color for both themes.** The defaults follow the page's background.
+- **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css`. `index.html` links the files, so it doesn't.
+
+## Running and testing
+
+```sh
+node cli.mjs edit index.html     # the demo, with the editor saving into index.html
+node --test test.mjs             # unit tests of the format
+npm i && npx playwright install chromium-headless-shell
+npm run test:browser             # the editor in headless Chrome
+```
+
+To use a playwright-core and a Chrome you already have, set `PLAYWRIGHT_CORE` (the playwright-core folder) and `CHROME` (a chrome or chrome-headless-shell binary) and run `node browser-test.mjs`.
+
+Opening `index.html` straight from disk gives the browser editor, which saves in `localStorage`.
+
+For anything visual, also screenshot the demo in light and dark, and at 390px wide. There should be no horizontal scroll.

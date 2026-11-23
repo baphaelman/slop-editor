@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slop editor</title>
+<meta name="description" content="Track who wrote every word on a page: the AI, you, or nobody. Then read the slop and make it yours.">
+<link rel="stylesheet" href="slop.css">
+<style>
+  :root {
+    --bg: #faf8f5; --panel: #ffffff; --ink: #1d1a22; --ink-2: #4f4a57; --ink-3: #87818f; --rule: #e6e2e9;
+    --accent: #6d35d0; --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131118; --panel: #1c1a22; --ink: #f2eff6; --ink-2: #c3bdcc; --ink-3: #8d8796; --rule: #2d2a34; --accent: #b892ff; }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: currentColor; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 20px; }
+
+  header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule); }
+  header.top .wrap { display: flex; align-items: center; gap: 18px; height: 56px; }
+  .mark { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: -0.01em; text-decoration: none; }
+  .mark i { width: 18px; height: 18px; border-radius: 50%; background: conic-gradient(var(--ink) 38%, var(--accent) 0); }
+  nav { display: flex; gap: 16px; margin-left: auto; font-size: 0.88rem; color: var(--ink-2); overflow-x: auto; scrollbar-width: none; }
+  nav a { text-decoration: none; white-space: nowrap; }
+  nav a:hover { color: var(--ink); }
+
+  /* the Slop-o-meter: its own band at the top, a big pie with its labels to the right */
+  .meter-band { padding: 22px 0; border-bottom: 1px solid var(--rule); }
+  .meter-band .slop-meter { margin: 0; gap: 14px 28px; font-size: 0.86rem; }
+  .meter-band .slop-meter-key { flex-wrap: nowrap; gap: 16px; }
+  .meter-band .slop-pie { width: 56px; height: 56px; }
+  .meter-band .slop-legend { display: grid; grid-template-columns: repeat(2, auto); gap: 4px 22px; }
+  .meter-band .slop-key { white-space: nowrap; }
+  @media (max-width: 560px) { .meter-band .slop-legend { grid-template-columns: auto; gap: 2px; } }
+  .hero { padding: 52px 0 40px; }
+  .eyebrow { margin: 0 0 14px; font: 600 0.78rem/1.4 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+  h1 { margin: 0 0 20px; font: 600 clamp(2.3rem, 6.4vw, 3.6rem)/1.06 var(--serif); letter-spacing: -0.02em; text-wrap: balance; }
+  .lede { margin: 0 0 28px; font-size: 1.15rem; color: var(--ink-2); text-wrap: pretty; }
+  .ctas { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn { display: inline-flex; align-items: center; height: 42px; padding: 0 18px; border-radius: 99px; border: 1px solid var(--rule); background: var(--panel); font: 600 0.92rem var(--sans); color: var(--ink); text-decoration: none; cursor: pointer; }
+  .btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .btn:hover { border-color: var(--accent); }
+
+  section { padding: 44px 0; border-top: 1px solid var(--rule); scroll-margin-top: 56px; }
+  h2 { margin: 0 0 16px; font: 600 1.7rem/1.2 var(--serif); letter-spacing: -0.01em; }
+  section p { margin: 0 0 14px; text-wrap: pretty; }
+  .sample { margin: 22px 0 8px; padding: 18px 20px; border: 1px solid var(--rule); border-radius: 14px; background: var(--panel); font: 1.05rem/1.55 var(--serif); }
+  .sample .tag { display: block; margin-bottom: 6px; font: 600 0.72rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+  code, .code, pre { font-family: var(--mono); font-size: 0.86em; }
+  code, .code { padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+  pre { margin: 0 0 16px; padding: 14px 16px; border-radius: 12px; background: var(--panel); border: 1px solid var(--rule); overflow-x: auto; line-height: 1.6; }
+  pre .c { color: var(--ink-3); }
+
+  .paste { display: grid; gap: 10px; margin: 20px 0 18px; }
+  .paste textarea { width: 100%; min-height: 130px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--rule); background: var(--panel); color: var(--ink); font: 0.92rem/1.5 var(--mono); resize: vertical; }
+  .paste textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  .paste .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .pasted { padding: 20px 22px 8px; border: 1px dashed var(--rule); border-radius: 14px; font: 1.02rem/1.6 var(--serif); }
+  .pasted:empty { display: none; }
+  .summary { display: flex; align-items: center; gap: 14px; margin: 0 0 16px; }
+  .summary:has(.pasted-note:empty) { display: none; }
+  .pasted-pie { flex: none; width: 44px; height: 44px; border-radius: 50%; background: var(--rule); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent); }
+  .pasted-note { margin: 0 !important; font-size: 0.92rem; color: var(--ink-2); }
+  .pasted-note .cat { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  footer { padding: 40px 0 120px; border-top: 1px solid var(--rule); color: var(--ink-2); }
+  footer .tagline { margin: 0 0 8px; font: 600 1.25rem/1.3 var(--serif); color: var(--ink); }
+  footer p { margin: 0 0 6px; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="#"><i aria-hidden="true"></i>Slop editor</a>
+    <nav>
+      <a href="#how" data-slop="nav.how"></a>
+      <a href="#repeats" data-slop="nav.repeats"></a>
+      <a href="#try" data-slop="nav.try"></a>
+      <a href="#install" data-slop="nav.install"></a>
+    </nav>
+  </div>
+</header>
+
+<div class="meter-band">
+  <div class="wrap"><div data-slop-meter></div></div>
+</div>
+
+<main class="wrap">
+  <div class="hero">
+    <p class="eyebrow" data-slop="hero.eyebrow"></p>
+    <h1 data-slop="hero.title"></h1>
+    <p class="lede" data-slop="hero.lede"></p>
+    <div class="ctas">
+      <a class="btn primary" href="#try">Try it on your own slop</a>
+      <a class="btn" href="#install">Install</a>
+    </div>
+  </div>
+
+  <section id="how">
+    <h2 data-slop="how.title"></h2>
+    <p data-slop="how.p1"></p>
+    <p data-slop="how.p2"></p>
+    <p data-slop="how.p3"></p>
+    <div class="sample"><span class="tag">Flip the Slop-o-meter, then read this</span><span data-slop="how.sample"></span></div>
+  </section>
+
+  <section id="repeats">
+    <h2 data-slop="repeats.title"></h2>
+    <p data-slop="repeats.p1"></p>
+    <p data-slop="repeats.p2"></p>
+  </section>
+
+  <section id="try">
+    <h2 data-slop="try.title"></h2>
+    <p data-slop="try.p1"></p>
+    <div class="paste">
+      <label for="paste" class="eyebrow" style="margin:0">Your agent's words</label>
+      <textarea id="paste" placeholder="Paste a README, a PR description, an email draft…"></textarea>
+      <div class="row">
+        <button type="button" class="btn primary" id="slopify">Slopify it</button>
+        <button type="button" class="btn" id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="summary">
+      <span class="pasted-pie" id="pasted-pie" role="img"></span>
+      <p class="pasted-note" id="pasted-note"></p>
+    </div>
+    <div class="pasted" id="pasted"></div>
+  </section>
+
+  <section id="install">
+    <h2 data-slop="install.title"></h2>
+    <p data-slop="install.p1"></p>
+<pre><span class="c"># in Claude Code</span>
+/plugin marketplace add baphaelman/slop-editor
+/plugin install slop-editor@slop-editor</pre>
+    <p data-slop="install.p2"></p>
+<pre>npx slop-editor install page.html
+npx slop-editor edit page.html</pre>
+    <p data-slop="install.p3"></p>
+<pre><span class="c">&lt;!-- in the page --&gt;</span>
+&lt;p data-slop="intro.p1"&gt;&lt;/p&gt;
+<span class="c">// in the block</span>
+"intro": { "p1": ["The agent wrote this. ", { "me": "I wrote this." }] }</pre>
+    <p data-slop="install.p4"></p>
+    <p data-slop="install.p5"></p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="tagline" data-slop="footer.tagline"></p>
+    <p data-slop="footer.note"></p>
+  </div>
+</footer>
+
+<script type="application/json" id="slop-text">
+{
+  "version": 53,
+  "nav": {
+    "how": [
+      {
+        "ok": "How it works"
+      }
+    ],
+    "repeats": [
+      {
+        "ok": "Repeated text"
+      }
+    ],
+    "try": [
+      {
+        "ok": "Try it"
+      }
+    ],
+    "install": [
+      {
+        "ok": "Install"
+      }
+    ]
+  },
+  "hero": {
+    "eyebrow": [
+      {
+        "ok": "A slop editor for agent-written pages"
+      },
+      {
+        "me": " and text"
+      }
+    ],
+    "title": [
+      {
+        "me": "Write your own words,"
+      },
+      {
+        "ok": " or admit you didn't write them."
+      }
+    ],
+    "lede": [
+      "The slop editor",
+      {
+        "ok": " tracks who wrote every word: the AI, you, or nobody. Readers flip a switch to see it. You get an editor to "
+      },
+      {
+        "me": "manage"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "the slop "
+      },
+      {
+        "ok": "and sign off on what you agree with"
+      },
+      {
+        "me": ", all color-coded."
+      }
+    ]
+  },
+  "how": {
+    "title": [
+      {
+        "ok": "How it works"
+      }
+    ],
+    "p1": [
+      {
+        "ok": "Every "
+      },
+      {
+        "me": "word"
+      },
+      {
+        "ok": " starts "
+      },
+      {
+        "me": "labelled "
+      },
+      {
+        "ok": "AI-generated. "
+      },
+      {
+        "me": "Then, wh"
+      },
+      {
+        "ok": "at you type becomes yours"
+      },
+      {
+        "me": ", and you can approve"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "AI text as it is by toggling **slop**  in the editor."
+      }
+    ],
+    "p2": [
+      {
+        "ok": "The "
+      },
+      {
+        "me": "text"
+      },
+      {
+        "ok": " live"
+      },
+      {
+        "me": "s"
+      },
+      {
+        "ok": " in a JSON block inside the page"
+      },
+      {
+        "me": ", "
+      },
+      {
+        "ok": "and the editor saves them back into the file"
+      },
+      {
+        "me": " directly"
+      },
+      {
+        "ok": ". Facts and quotes belong to nobody"
+      },
+      {
+        "me": ", and are colored accordingly"
+      },
+      {
+        "ok": ": this page has {words} words."
+      }
+    ],
+    "p3": [
+      {
+        "ok": "C"
+      },
+      {
+        "me": "reate your own categories with their own colors, like c"
+      },
+      {
+        "ok": "o-authors, editors"
+      },
+      {
+        "me": ", and "
+      },
+      {
+        "ok": "sources. Pick a color for each, then mark any selection as theirs."
+      }
+    ],
+    "sample": [
+      {
+        "ok": "The agent wrote this sentence. "
+      },
+      {
+        "me": "I wrote this one. "
+      },
+      {
+        "ok": "And this part "
+      },
+      {
+        "data": "\"is a quote\""
+      },
+      {
+        "ok": "."
+      }
+    ]
+  },
+  "repeats": {
+    "title": [
+      {
+        "ok": "Repeated text"
+      }
+    ],
+    "p1": [
+      {
+        "me": "Pages"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "and documents repeat text---for example, the 'repeated text' text is both above and in the navbar. "
+      },
+      {
+        "ok": "Each copy is slop until you unslopify it, but the editor knows they're the same words."
+      }
+    ],
+    "p2": [
+      {
+        "me": "The"
+      },
+      {
+        "ok": " **Repeats** tab shows one card per repeated text. Edit the card to change every copy, or unslopify them all at once. "
+      }
+    ]
+  },
+  "try": {
+    "title": [
+      {
+        "ok": "Try it"
+      }
+    ],
+    "p1": [
+      {
+        "me": "Paste your text below; it"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "first s"
+      },
+      {
+        "ok": "hows up as slop. Then open the editor "
+      },
+      {
+        "me": "("
+      },
+      {
+        "ok": "bottom right"
+      },
+      {
+        "me": ")"
+      },
+      {
+        "ok": " and make it yours."
+      }
+    ],
+    "note": [
+      {
+        "ok": "{mine}, {approved}, {data}, {slop}."
+      }
+    ]
+  },
+  "install": {
+    "title": [
+      {
+        "ok": "Install"
+      }
+    ],
+    "p1": [
+      {
+        "ok": "With Claude Code"
+      },
+      {
+        "me": ":"
+      },
+      {
+        "ok": " add the plugin, "
+      },
+      {
+        "me": "and"
+      },
+      {
+        "ok": " ask for the slop editor on any page"
+      }
+    ],
+    "p2": [
+      {
+        "ok": "Without it"
+      },
+      {
+        "me": ":"
+      },
+      {
+        "ok": " the command line does the same"
+      }
+    ],
+    "p3": "The words live in a JSON block in the page, and each element names its text with `data-slop`:",
+    "p4": [
+      "Then run `slop-editor edit`",
+      {
+        "me": ", which saves into the file."
+      }
+    ],
+    "p5": [
+      {
+        "me": "The"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "published p"
+      },
+      {
+        "ok": "age shows readers what you pick in the editor: nothing ("
+      },
+      {
+        "me": "by"
+      },
+      {
+        "ok": " default)"
+      },
+      {
+        "me": ";"
+      },
+      {
+        "ok": " a pie chart of "
+      },
+      {
+        "me": "the"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "categories;"
+      },
+      {
+        "ok": " or the Slop-o-meter, a "
+      },
+      {
+        "me": "toggle"
+      },
+      {
+        "ok": " that colors every word"
+      },
+      {
+        "me": ", like in this page."
+      }
+    ]
+  },
+  "footer": {
+    "tagline": [
+      {
+        "me": "Write"
+      },
+      {
+        "ok": " "
+      },
+      {
+        "me": "your words, "
+      },
+      {
+        "ok": "or admit you didn't write them."
+      }
+    ],
+    "note": [
+      {
+        "ok": "MIT license"
+      },
+      {
+        "me": " (t"
+      },
+      {
+        "ok": "his page's own text is tracked: flip the Slop-o-meter "
+      },
+      {
+        "me": "toggle "
+      },
+      {
+        "ok": "at the top"
+      },
+      {
+        "me": ")"
+      }
+    ]
+  },
+  "_show": "colors"
+}
+</script>
+<script src="slop.js"></script>
+<script>
+  // the pasted text is a group of its own in the block, one text per paragraph
+  const pasted = document.getElementById('pasted');
+  const note = document.getElementById('pasted-note');
+  const pastedPaths = () => Object.keys(Slop.text.pasted ?? {}).map((k) => `pasted.${k}`);
+  let showNote = false; // the editor is showing the note while it's edited
+
+  function numbers() {
+    Slop.vars.words = Slop.share(Slop.entries().map(([, v]) => v)).allWords.toLocaleString();
+    // what the pasted text is made of: each built-in category's share of its letters
+    const m = Slop.makeup(pastedPaths().map(Slop.get));
+    const pct = (id) => Slop.percent(m.letters ? (m.counts[id] ?? 0) / m.letters : 0);
+    // each share in its category's color, with its label: this page is about the categories, so it may color them
+    const share = (id, label) => ({ html: `<span class="cat" style="color: var(--slop-c-${id}, var(--ink))">${pct(id)} ${label}</span>` });
+    Object.assign(Slop.vars, { mine: share('me', 'yours'), approved: share('ok', 'approved'), data: share('data', 'data and quotes'), slop: share('ai', 'slop') });
+  }
+  // after any change: the paragraphs match the block, and the numbers are current
+  // a pie of what the pasted text is made of, in the categories' colors (as CSS variables, so it follows the theme
+  // and the colors picked in the editor)
+  const pieEl = document.getElementById('pasted-pie');
+  function pie() {
+    const m = Slop.makeup(pastedPaths().map(Slop.get));
+    let at = 0;
+    const stops = Slop.categories().filter((c) => m.counts[c.id]).map((c) => {
+      const from = at;
+      at += (m.counts[c.id] / m.letters) * 100;
+      return `var(--slop-c-${c.id.replace(/[^\w-]/g, '_')}, var(--ink)) ${from.toFixed(2)}% ${at.toFixed(2)}%`;
+    });
+    pieEl.style.background = stops.length ? `conic-gradient(${stops.join(', ')})` : '';
+    pieEl.setAttribute('aria-label', note.textContent);
+  }
+  function sync() {
+    numbers();
+    const paths = pastedPaths();
+    if ([...pasted.children].map((p) => p.dataset.slop).join() !== paths.join()) {
+      pasted.replaceChildren(...paths.map((path) => {
+        const p = document.createElement('p');
+        p.dataset.slop = path;
+        return p;
+      }));
+    }
+    note.dataset.slop = 'try.note';
+    if (!paths.length && !showNote) { note.removeAttribute('data-slop'); note.textContent = ''; }
+    Slop.fill();
+    pie();
+  }
+
+  document.getElementById('slopify').addEventListener('click', () => {
+    const paras = document.getElementById('paste').value.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    if (!paras.length) return;
+    Slop.remove('pasted');
+    // Markdown's bold, italics, code and links render as they are; braces would read as values
+    paras.forEach((p, i) => Slop.set(`pasted.p${i + 1}`, p.replace(/[\\{]/g, '\\$&')));
+    sync();
+    Slop.refresh();
+    pasted.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+  document.getElementById('clear').addEventListener('click', () => {
+    document.getElementById('paste').value = '';
+    Slop.remove('pasted');
+    sync();
+    Slop.refresh();
+  });
+
+  // the note shows only once something is pasted: the editor can show it anyway, while it's edited
+  Slop.reveal('try.note', () => {
+    showNote = true;
+    sync();
+    return () => { showNote = false; sync(); };
+  });
+
+  numbers();
+  Slop.onChange(sync);
+  Slop.start({ edit: 'local' });
+  sync();
+</script>
+</body>
+</html>

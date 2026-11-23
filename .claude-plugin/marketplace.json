@@ -1,0 +1,14 @@
+{
+  "name": "slop-editor",
+  "owner": {
+    "name": "Raphael Bajet"
+  },
+  "description": "A slop editor for agent-written pages.",
+  "plugins": [
+    {
+      "name": "slop-editor",
+      "source": "./",
+      "description": "A slop editor: track who wrote every word on a page (the AI, you, or nobody), then read the slop and make it yours."
+    }
+  ]
+}
