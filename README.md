@@ -22,10 +22,10 @@ The agent moves the page's words into the text block for you. That's the tedious
 **Without it**, use the command line (Node 18+):
 
 ```sh
-npx slop-editor install page.html   # inline slop.css and slop.js, add the text block
-npx slop-editor edit page.html      # open the page with the editor; it saves into the file
-npx slop-editor check page.html     # how much is yours, repeated text, texts the block lacks
-npx slop-editor sync page.html      # re-inline the current slop.css and slop.js
+npx github:baphaelman/slop-editor install page.html # inline slop.css and slop.js, add the text block
+npx github:baphaelman/slop-editor edit page.html    # open the page with the editor; it saves into the file
+npx github:baphaelman/slop-editor check page.html   # how much is yours, repeated text, texts the block lacks
+npx github:baphaelman/slop-editor sync page.html    # re-inline the current slop.css and slop.js
 ```
 
 Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`.
