@@ -16,7 +16,7 @@ The slop editor's code and CLI are in this plugin: `${CLAUDE_PLUGIN_ROOT}`. The 
 5. Call `Slop.start()` once `Slop.vars` is set and before anything reads the text. Register `Slop.onChange(fn)` to redo anything built from the text (layout, titles, charts) after an edit.
 6. For any text the page shows only some of the time (after an interaction, in a hidden tab or state), register `Slop.reveal('group.key', () => { /* show it */ return () => { /* undo */ }; })` so the editor can show it while it's edited. Keep it shown through the page's own redraws while revealed.
 7. Run `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" check <page.html>`. It reports texts the page uses that the block lacks, repeated text, and how much is the user's.
-8. Tell the user how to edit: `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" edit <page.html>` (or `npx github:baphaelman/slop-editor edit`). It opens the page with the editor, which saves into the file. Note it in the project's README.
+8. Tell the user how to edit: `node "${CLAUDE_PLUGIN_ROOT}/cli.mjs" edit <page.html>` (or `npx slop-editor edit`). It opens the page with the editor, which saves into the file. Note it in the project's README.
 
 **Converting a page that already has text:** everything that isn't obviously a label becomes AI text. If the user has already written or edited some of it, record their words as `{"me": ...}` pieces, with a word-level diff, and tell them what you attributed to them.
 
