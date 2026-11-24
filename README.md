@@ -26,13 +26,13 @@ The agent moves the page's words into the text block for you. That's the tedious
 ```sh
 npx slop-editor install page.html  # inline slop.css and slop.js, add the text block
 npx slop-editor install --auto page.html  # the same, and move the page's paragraphs, headings and list items into the block
-npx slop-editor edit page.html     # open the page with the editor; it saves into the file
+npx slop-editor edit page.html     # open the page with the editor; it saves into the file (and re-inlines the current code)
 npx slop-editor check page.html    # how much is yours, repeated text, texts the block lacks
 npx slop-editor history page.html  # what each git commit did to who wrote what (a page, or a block kept as .json)
 npx slop-editor sync page.html     # re-inline the current slop.css and slop.js
 ```
 
-Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`.
+Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`. A site that installs `slop-editor` from npm can serve `node_modules/slop-editor/slop.js` and `slop.css` itself, so `npm update slop-editor` updates every page. Under `slop-editor edit`, a page that links a `slop.js` or `slop.css` its folder doesn't have gets the CLI's own.
 
 ## The text block
 

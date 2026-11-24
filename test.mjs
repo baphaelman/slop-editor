@@ -1,6 +1,6 @@
 // node test.mjs: the format's functions, from slop.js (outside a browser it returns only those)
 import { readFile, writeFile, mkdtemp, mkdir, copyFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -117,6 +117,28 @@ test('install --auto: prose moves into the block, labels, code and other markup 
     assert.ok(r.html.includes('<h1 data-slop="big-news.title"></h1>'));
     assert.ok(r.html.includes('<p>Short one</p>') && r.html.includes('<nav><p>Not in the nav at all</p></nav>'));
     assert.equal(Slop.readable(r.block['big-news'].p3), 'Second {x} para here.');
+});
+
+test('edit: a page that inlines old code gets the current code; one that links it is served it', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-edit-'));
+    const page = path.join(dir, 'page.html');
+    const block = '<script type="application/json" id="slop-text">{"version": 1}</script>';
+    await writeFile(page, `<style id="slop-css">old</style><p>hi</p>${block}<script id="slop-js">old</script>`);
+    await writeFile(path.join(dir, 'linked.html'), `<link rel="stylesheet" href="/slop/slop.css">${block}<script src="/slop/slop.js"></script>`);
+    const server = spawn(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'edit', page, '--no-open', '--port', '5251'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    try {
+        const link = await new Promise((resolve) => server.stdout.on('data', (d) => { const m = /http:\/\/\S+/.exec(String(d)); if (m) resolve(m[0]); }));
+        const html = await readFile(page, 'utf8');
+        assert.ok(html.includes((await readFile(new URL('slop.js', import.meta.url), 'utf8')).slice(0, 200)));
+        assert.ok(!html.includes('>old<'));
+        const js = await fetch(new URL('/slop/slop.js', link));
+        assert.equal(js.status, 200);
+        assert.match(js.headers.get('content-type'), /javascript/);
+        assert.equal((await fetch(new URL('/slop/slop.css', link))).status, 200);
+        assert.equal((await fetch(new URL('/slop/other.js', link))).status, 404);
+    } finally {
+        server.kill();
+    }
 });
 
 test('history: what each commit did to who wrote what', async () => {

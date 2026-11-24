@@ -81,7 +81,8 @@ Read `applyEdit` and `runs` first. Everything else builds on them.
   - Otherwise there's no editor.
 - `slop-editor edit` serves only the page's folder, on 127.0.0.1. `POST /__slop` takes the whole block. Saves run one at a time and are written to a `.saving` file that's then renamed over the page.
 - `slop-editor edit` starts at port 5178 and moves on from any port where something already answers, on 127.0.0.1 or on ::1. Checking both matters because `localhost` can mean either, and dev servers such as Vite often listen on ::1 only.
-- `install` adds `<style id="slop-css">`, `<script id="slop-js">` and the block. `sync` rewrites what's between the first two markers.
+- `install` adds `<style id="slop-css">`, `<script id="slop-js">` and the block. `sync` rewrites what's between the first two markers. `edit` runs `sync` on a page that has them before it serves it, so a page that inlines the code is current whenever it's edited.
+- A page can link the files instead. `edit` serves a requested `slop.js` or `slop.css` that isn't in the folder from the CLI's own copy (by file name, at any path), so a site's page that links `/slop/slop.js` works under `edit` too.
 
 ## Design principles
 
@@ -115,7 +116,7 @@ Keep these unless the maintainer changes them.
 - **A text box's colors are a copy behind it.** The textarea's letters are transparent and `.sp-mirror`, under it, draws the same text in spans by author. The two must wrap identically: they share one CSS rule for font, padding, border and wrapping, so change them together. `numbers()` repaints the copies after every change.
 - **"Not on the page" waits for the page.** A text just added, restored or undone has no element until the next fill (and a single-page app draws later still), so `seenSoon` checks the tags again after each fill and whenever the page adds elements.
 - **A removed text can still be painted once.** `withUndo` repaints (`numbers()`) before the view is redrawn, so anything painting a field reads its value with `valueAt`, not `get`, which would warn about the missing text.
-- **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css`. `index.html` links the files, so it doesn't.
+- **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css` (or `slop-editor edit`, which syncs first). `index.html` links the files, so it doesn't.
 
 ## Running and testing
 

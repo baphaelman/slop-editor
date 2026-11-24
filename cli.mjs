@@ -5,6 +5,7 @@
 //              [--auto]               also move the page's static prose (paragraphs, headings, list items) into the block
 //   slop-editor sync <page.html …>    re-inline the current slop.css and slop.js into pages that have them
 //   slop-editor edit <page.html>      serve the page's folder on localhost with the editor, which saves into the file
+//                                     (it re-inlines the current code first, and serves slop.js/slop.css to a page that links them)
 //              [--port 5178] [--no-open]
 //   slop-editor check <page.html>     what the text is made of, the repeated text, and texts the page uses but the block lacks
 //   slop-editor history <page.html>   what each git commit did to who wrote what (a page, or a block kept as .json)
@@ -145,7 +146,10 @@ const TYPES = {
 async function edit(file, { port, fixed, open }) {
     const root = path.dirname(file);
     const name = path.basename(file);
-    readBlock(await readFile(file, 'utf8'), name); // fail now, not on the first save
+    const html = await readFile(file, 'utf8');
+    readBlock(html, name); // fail now, not on the first save
+    // a page that inlines the code gets this version's, so a page on its own stays current
+    if (!name.endsWith('.json') && STYLE.test(html) && SCRIPT.test(html)) await sync(file);
     let queue = Promise.resolve(); // one save at a time
     const save = (body) => {
         const run = queue.then(async () => {
@@ -193,6 +197,9 @@ async function edit(file, { port, fixed, open }) {
             if (!(await stat(target)).isFile()) return send(404, 'not found');
             send(200, await readFile(target), TYPES[path.extname(target).toLowerCase()] ?? 'application/octet-stream');
         } catch {
+            // a page that links slop.js and slop.css from elsewhere (a site's build serves them) gets this version's
+            const own = path.basename(url.pathname);
+            if (own === 'slop.js' || own === 'slop.css') return send(200, await readFile(path.join(here, own)), TYPES[path.extname(own)]);
             send(404, 'not found');
         }
     });
