@@ -266,7 +266,25 @@ const Slop = (() => {
         });
     }
     const groupKeys = () => Object.keys(text).filter((k) => !isMeta(k) && text[k] && (isText(text[k]) || typeof text[k] === 'object'));
-    const elementsOf = (path) => document.querySelectorAll(`[data-slop="${CSS.escape(dotted(path))}"]`);
+    // the texts an element holds in its attributes, from data-slop-attr="alt:hero.photo title:hero.tip": [[name, path]]
+    const attrsOf = (x) => (x.dataset.slopAttr ?? '').split(/\s+/).map((s) => [s.slice(0, s.indexOf(':')), s.slice(s.indexOf(':') + 1)]).filter(([n, p]) => n && p);
+    // the elements that show a text: [data-slop] ones, which fill() writes, [data-slop-ref] ones, which the page writes
+    // itself (words inside a button or a link it builds) but the editor can still find, and [data-slop-attr] ones
+    const elementsOf = (path) => {
+        const at = dotted(path);
+        const q = CSS.escape(at);
+        return [...document.querySelectorAll(`[data-slop="${q}"], [data-slop-ref="${q}"], [data-slop-attr*=":${q}"]`)]
+            .filter((x) => x.dataset.slop === at || x.dataset.slopRef === at || attrsOf(x).some(([, p]) => p === at));
+    };
+    // a text the page has but doesn't show as words (alt text, a tooltip, a label): the attribute it's in, or ''
+    function attrOf(path) {
+        const at = dotted(path);
+        for (const x of document.querySelectorAll('[data-slop-attr]')) {
+            const hit = attrsOf(x).find(([, p]) => p === at);
+            if (hit) return hit[0];
+        }
+        return '';
+    }
 
     // texts the page's code has rendered (Slop.html, Slop.words): with the [data-slop] elements, what's on the page
     const rendered = new Set();
@@ -279,16 +297,34 @@ const Slop = (() => {
     const reveal = (path, fn) => { revealers.set(dotted(path), fn); };
     const revealerOf = (path) => revealers.get(dotted(path)) ?? revealers.get(keysOf(path)[0]);
     // fill every [data-slop] element (data-slop-vars: a JSON object of extra values)
-    function fill(root = document) {
-        root.querySelectorAll('[data-slop]').forEach((el) => {
-            const local = el.dataset.slopVars ? JSON.parse(el.dataset.slopVars) : undefined;
+    // fill an element: its words from data-slop, its attributes from data-slop-attr (as plain text)
+    function fillOne(el) {
+        const local = el.dataset.slopVars ? JSON.parse(el.dataset.slopVars) : undefined;
+        if (el.dataset.slop) {
             const h = render(get(el.dataset.slop), local);
             if (el.innerHTML !== h) el.innerHTML = h;
+        }
+        attrsOf(el).forEach(([name, path]) => {
+            const v = readable(get(path), local);
+            if (el.getAttribute(name) !== v) el.setAttribute(name, v);
         });
+    }
+    const fill = (root = document) => root.querySelectorAll('[data-slop], [data-slop-attr]').forEach(fillOne);
+    // the [data-slop] elements and meters in what the page added after start (a single-page app draws late)
+    function added(n) {
+        if (n.nodeType !== 1 || n.closest('.slop-panel')) return;
+        if (n.matches('[data-slop], [data-slop-attr]')) fillOne(n);
+        fill(n);
+        if (n.matches('[data-slop-meter]')) meter(n);
+        n.querySelectorAll('[data-slop-meter]').forEach(meter);
     }
 
     const listeners = [];
-    const onChange = (fn) => listeners.push(fn);
+    // returns a function that stops calling fn
+    const onChange = (fn) => {
+        listeners.push(fn);
+        return () => { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); };
+    };
     let pending = false;
     function changed() { // after an edit: refill the page, then let the page redo whatever it built from the text
         if (pending) return;
@@ -337,14 +373,18 @@ const Slop = (() => {
     }
     const swatch = (cat) => cat.color ?? ink();
 
-    // the colors go in a stylesheet of their own: each category's words while the Slop-o-meter is on, and
-    // --slop-c-<id> for anything else that wants them
+    // the colors go in a stylesheet of their own: each category's words inside a .slop-on (the page, while the
+    // Slop-o-meter is on, or a section whose own switch is) but not inside a .slop-off (a section switched off), and
+    // --slop-c-<id> for anything else that wants them. Inside a [data-slop-only="<id>"] (a meter's tag is pointed at),
+    // everyone else's words are dimmed. :where keeps these as easy to override as html.slop-on .slop-<id> was
     let sheet = null;
     function applyColors() {
         sheet ??= document.head.appendChild(Object.assign(document.createElement('style'), { id: 'slop-colors' }));
-        const cats = categories().filter((c) => c.color);
+        const all = categories();
+        const cats = all.filter((c) => c.color);
         sheet.textContent = `:root{${cats.map((c) => `--${cls(c.id).replace('slop-', 'slop-c-')}:${c.color}`).join(';')}}\n`
-            + cats.map((c) => `html.slop-on .${cls(c.id)}{color:${c.color}}`).join('\n');
+            + cats.map((c) => `:where(.slop-on) .${cls(c.id)}:not(:where(.slop-off) .${cls(c.id)}){color:${c.color}}`).join('\n')
+            + `\n${all.map((c) => `[data-slop-only]:not([data-slop-only="${CSS.escape(c.id)}"]) .${cls(c.id)}{opacity:.3}`).join('\n')}`;
     }
 
     // a pie of what these texts are made of, and the same in words for its tooltip
@@ -395,45 +435,80 @@ const Slop = (() => {
     const SHOW = ['nothing', 'pie', 'colors'];
     const shows = () => (SHOW.includes(text._show) ? text._show : 'nothing');
     const meters = [];
+    const built = new WeakMap(); // element → its meter
     let meterOn = false;
     let editing = false;
     function setMeter(on) {
         meterOn = on;
         paintShow();
     }
+    // a meter with a path (data-slop-meter="games.othello") measures the texts under it, and its switch colors only
+    // its section: the closest [data-slop-section], or its parent. A bare one measures the page and switches it
+    const inScope = (at) => ([path]) => !at || path === at || path.startsWith(`${at}.`);
+    const sectionOf = (m) => (m.at && m.el.parentElement ? m.el.closest('[data-slop-section]') ?? m.el.parentElement : document.documentElement);
     function paintShow() {
         const mode = shows();
         document.documentElement.classList.toggle('slop-on', editing || (mode === 'colors' && meterOn));
         meters.forEach((m) => {
             m.el.dataset.show = mode;
-            m.btn.setAttribute('aria-pressed', String(meterOn));
+            const section = sectionOf(m);
+            if (m.section && m.section !== section) m.section.classList.remove('slop-on', 'slop-off');
+            m.section = section;
+            // a section's switch follows the page's until it's flipped. The editor shows the author every color
+            if (m.at) {
+                const own = mode === 'colors' && !editing ? m.own : null;
+                section.classList.toggle('slop-on', own === true);
+                section.classList.toggle('slop-off', own === false);
+            }
+            m.btn.setAttribute('aria-pressed', String(m.own ?? meterOn));
         });
     }
     function paintMeters() {
+        // a meter the page took out of the document is dropped; it comes back if the page puts it back
+        meters.splice(0, meters.length, ...meters.filter((m) => m.el.isConnected));
         paintShow();
         if (!meters.length) return;
         const cats = categories();
-        const m = makeup(entries().map(([, v]) => v));
-        meters.forEach(({ pie, legend }) => {
+        const all = entries();
+        const byScope = new Map();
+        meters.forEach(({ at, pie, legend }) => {
+            if (!byScope.has(at)) byScope.set(at, makeup(all.filter(inScope(at)).map(([, v]) => v)));
+            const m = byScope.get(at);
             pie.style.background = gradient(m, cats);
             pie.title = breakdown(m, cats);
             pie.setAttribute('aria-label', pie.title);
-            // each category in its own color, with its share of the page's text
+            // each category in its own color, with its share of the text
             legend.innerHTML = cats.filter((c) => m.counts[c.id])
-                .map((c) => `<span class="slop-key" style="color:${swatch(c)}"><i style="background:${swatch(c)}"></i>${esc(c.label)}<b class="slop-pct">${percent(m.counts[c.id] / m.letters)}</b></span>`).join('');
+                .map((c) => `<span class="slop-key" tabindex="0" data-id="${esc(c.id)}" style="color:${swatch(c)}"><i style="background:${swatch(c)}"></i>${esc(c.label)}<b class="slop-pct">${percent(m.counts[c.id] / m.letters)}</b></span>`).join('');
         });
     }
     function buildMeter(el) {
         el.classList.add('slop-meter');
         el.innerHTML = '<button type="button" class="slop-meter-btn" aria-pressed="false"><span class="slop-switch" aria-hidden="true"></span>Slop-o-meter</button>'
             + '<span class="slop-meter-key"><span class="slop-pie" role="img"></span><span class="slop-legend"></span></span>';
-        const m = { el, btn: el.querySelector('button'), pie: el.querySelector('.slop-pie'), legend: el.querySelector('.slop-legend') };
+        const m = { el, at: el.dataset.slopMeter || '', own: null, section: null, btn: el.querySelector('button'), pie: el.querySelector('.slop-pie'), legend: el.querySelector('.slop-legend') };
         m.btn.addEventListener('click', () => {
-            const on = !meterOn;
+            const on = !(m.own ?? meterOn);
+            if (m.at) { m.own = on; paintShow(); return; } // only the page-wide choice is remembered
             setMeter(on);
             store.set('slop-o-meter', on ? 'on' : 'off');
         });
-        meters.push(m);
+        // pointing at a tag dims everyone else's words, in the meter's section
+        const only = (e) => {
+            const key = e.type === 'mouseover' || e.type === 'focusin' ? e.target.closest('.slop-key') : null;
+            const section = m.section ?? sectionOf(m);
+            if (key) section.dataset.slopOnly = key.dataset.id;
+            else delete section.dataset.slopOnly;
+        };
+        ['mouseover', 'mouseout', 'focusin', 'focusout'].forEach((type) => m.legend.addEventListener(type, only));
+        built.set(el, m);
+        return m;
+    }
+    // build a meter (or take back one the page moved), and paint it
+    function meter(el) {
+        const m = built.get(el) ?? buildMeter(el);
+        if (!meters.includes(m)) meters.push(m);
+        paintMeters();
     }
 
     /* ---------- the editor ---------- */
@@ -458,6 +533,9 @@ const Slop = (() => {
     const count = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
     const isLong = (path, value) => plain(value).length > 48 || /^p\d+$/.test(keysOf(path).at(-1));
     const el = (tag, className, html = '') => Object.assign(document.createElement(tag), { className, innerHTML: html });
+
+    // what a hidden text is, by the attribute it's in
+    const KINDS = { alt: 'alt text', title: 'tooltip', 'aria-label': 'label', 'aria-description': 'description', placeholder: 'placeholder' };
 
     // the editor opens on repeated text that still has slop, or on any text that does, or on everything
     const slopIn = (path) => (makeup([get(path)]).counts.ai ?? 0) > 0;
@@ -494,6 +572,7 @@ const Slop = (() => {
             <button type="button" role="tab" data-tab="repeats">Repeats <span></span></button>
             <button type="button" role="tab" data-tab="slop">Slop left <span></span></button>
             <button type="button" role="tab" data-tab="all">All <span></span></button>
+            <button type="button" role="tab" data-tab="hidden" title="Words the page has but doesn't show: alt text, tooltips, labels">Hidden <span></span></button>
           </div>
           <div class="sp-body" role="tabpanel"></div>
           ${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((e) => `<div class="sp-edge" data-edge="${e}" aria-hidden="true"></div>`).join('')}`);
@@ -696,7 +775,7 @@ const Slop = (() => {
             const fid = `sp-${path.replace(/\W/g, '-')}${all ? '-all' : ''}`;
             const name = all ? `${all.paths.length} copies` : keysOf(path).slice(1).map(human).join(' · ') || human(path);
             wrap.innerHTML = `<div class="sp-flabel"><label for="${fid}">${esc(name)}</label>`
-                + '<button type="button" class="sp-unseen" hidden></button></div>'
+                + '<span class="sp-kind" hidden></span><button type="button" class="sp-unseen" hidden></button></div>'
                 + `<textarea id="${fid}" rows="1" spellcheck="true"></textarea><p class="sp-hint" hidden></p>`;
             const row = wrap.querySelector('.sp-flabel');
             const input = wrap.querySelector('textarea');
@@ -743,6 +822,7 @@ const Slop = (() => {
             wrap.querySelector('.sp-unseen').addEventListener('click', () => input.focus());
             wrap.input = input;
             wrap.rep = wrap.querySelector('.sp-rep');
+            wrap.kind = wrap.querySelector('.sp-kind');
             wrap.revert = revert;
             wrap.paths = paths;
             return wrap;
@@ -751,7 +831,7 @@ const Slop = (() => {
         function groupView(key, paths) {
             const det = el('details', 'sp-group', `<summary><span class="sp-gname">${esc(groupTitle(key))}</span><span class="sp-gnote"></span></summary>`);
             det.dataset.group = key;
-            det.open = state.open.has(key);
+            det.open = state.open.has(key) || state.tab === 'hidden'; // there are few, so all of them show
             const all = entries(text[key], [key]).map(([p]) => p);
             det.querySelector('summary').append(control(() => all, `"${groupTitle(key)}"`));
             det.addEventListener('toggle', () => {
@@ -791,15 +871,18 @@ const Slop = (() => {
                     body.append(card);
                 });
             } else {
-                const only = state.tab === 'slop';
+                const tab = state.tab;
+                const keep = tab === 'slop' ? hasSlop : tab === 'hidden' ? attrOf : () => true;
+                if (tab === 'hidden') body.insertAdjacentHTML('beforeend', '<p class="sp-intro">Words the page has but doesn\'t show: alt text for when an image doesn\'t load, tooltips, labels for screen readers. Readers\' colors can\'t show them, so read them here.</p>');
                 let shown = 0;
                 groupKeys().forEach((key) => {
-                    const paths = (isText(text[key]) ? [key] : entries(text[key], [key]).map(([p]) => p)).filter((p) => !only || hasSlop(p));
+                    const paths = (isText(text[key]) ? [key] : entries(text[key], [key]).map(([p]) => p)).filter(keep);
                     if (!paths.length) return;
                     shown += paths.length;
                     body.append(isText(text[key]) ? field(key) : groupView(key, paths));
                 });
-                if (only && !shown) body.insertAdjacentHTML('beforeend', '<p class="sp-empty">No slop left. Every word here is yours, approved, or someone else\'s.</p>');
+                if (tab === 'slop' && !shown) body.insertAdjacentHTML('beforeend', '<p class="sp-empty">No slop left. Every word here is yours, approved, or someone else\'s.</p>');
+                if (tab === 'hidden' && !shown) body.insertAdjacentHTML('beforeend', '<p class="sp-empty">No hidden text on this page. Mark an element\'s with <code>data-slop-attr="alt:group.key"</code>.</p>');
             }
             aside.classList.add('sp-still'); // new switches appear as they are, without sliding there
             numbers();
@@ -826,8 +909,12 @@ const Slop = (() => {
                 go.title = breakdown(m, cats);
             });
             const live = repeats(all);
-            const tabs = { all: all.length, slop: all.filter(([p]) => hasSlop(p)).length, repeats: live.length };
-            aside.querySelectorAll('.sp-tabs button').forEach((b) => { b.querySelector('span').textContent = tabs[b.dataset.tab]; });
+            const hidden = new Map(all.map(([p]) => [p, attrOf(p)]).filter(([, a]) => a));
+            const tabs = { all: all.length, slop: all.filter(([p]) => hasSlop(p)).length, repeats: live.length, hidden: hidden.size };
+            aside.querySelectorAll('.sp-tabs button').forEach((b) => {
+                b.querySelector('span').textContent = tabs[b.dataset.tab];
+                if (b.dataset.tab === 'hidden') b.hidden = !hidden.size && state.tab !== 'hidden'; // only on pages that have some
+            });
             body.querySelectorAll('.sp-field').forEach((f) => {
                 f.revert.hidden = !f.paths().some((p) => differs(p) && savedAt(p) !== undefined);
                 const tag = f.querySelector('.sp-unseen');
@@ -838,6 +925,10 @@ const Slop = (() => {
                 tag.title = shown ? 'The page normally hides this. It\'s shown while you edit it'
                     : tag.disabled ? 'Not on the page right now: the page shows it only some of the time, or not at all. A page can say how to show it with Slop.reveal'
                         : 'Show the page the way it looks with this text';
+                const kind = f.paths().map((p) => hidden.get(p)).find(Boolean);
+                f.kind.hidden = !kind;
+                f.kind.textContent = KINDS[kind] ?? kind ?? '';
+                f.kind.title = kind ? `Not shown as words: the page's ${kind} attribute` : '';
             });
             paintSave();
             body.querySelectorAll('.sp-field:not(.sp-set)').forEach((f) => {
@@ -857,15 +948,32 @@ const Slop = (() => {
         repaint = () => { if (!aside.hidden) render(); };
 
         // the page and the editor point at each other
-        function mark(on, paths = state.focus?.paths ?? [], scroll = false) {
+        function mark(on, paths = state.focus?.paths ?? [], scroll = false, tries = 0) {
             document.querySelectorAll('.slop-focus, .slop-copy').forEach((x) => x.classList.remove('slop-focus', 'slop-copy'));
             if (!on) return;
             paths.forEach((p, i) => elementsOf(p).forEach((x) => x.classList.add(i ? 'slop-copy' : 'slop-focus')));
             const target = paths.map((p) => elementsOf(p)[0]).find(Boolean);
-            if (!target || !scroll) return;
+            if (!scroll) return;
+            // a text the page only just revealed may not be drawn yet (React and the like draw on the next frame)
+            if (!target) {
+                if (tries < 10) requestAnimationFrame(() => { if (state.focus?.paths === paths) mark(true, paths, true, tries + 1); });
+                return;
+            }
+            // scroll whatever holds it (the window, or a panel of the page's that scrolls on its own) to bring it to
+            // the middle of what's visible, unless it's already well in view
+            const box = scroller(target);
             const r = target.getBoundingClientRect();
-            const bottom = innerWidth <= 900 ? aside.getBoundingClientRect().top : innerHeight;
-            if (r.top < 8 || r.bottom > bottom - 8) scrollBy({ top: r.top - (bottom - r.height) / 2, behavior: 'smooth' });
+            const top = box ? Math.max(box.getBoundingClientRect().top, 0) : 0;
+            const bottom = Math.min(box ? box.getBoundingClientRect().bottom : innerHeight, innerWidth <= 900 ? aside.getBoundingClientRect().top : innerHeight);
+            const pad = Math.min(120, (bottom - top) / 5); // room for a header that stays put
+            if (r.top < top + pad || r.bottom > bottom - 8) (box ?? window).scrollBy({ top: r.top - (top + bottom - r.height) / 2, behavior: 'smooth' });
+        }
+        // the nearest element around `el` that scrolls, or null for the window
+        function scroller(el) {
+            for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+                if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+            }
+            return null;
         }
         function focus(path, all, input, wrap) {
             const s = all ?? setOf(path);
@@ -1034,11 +1142,12 @@ const Slop = (() => {
         // while the editor is open, a click on a text opens it in the editor
         document.addEventListener('click', (e) => {
             if (aside.hidden || aside.contains(e.target) || btn.contains(e.target)) return;
-            const target = e.target.closest('[data-slop]');
+            const target = e.target.closest('[data-slop], [data-slop-ref], [data-slop-attr]');
             if (!target) return;
             e.preventDefault();
             e.stopPropagation();
-            const path = target.dataset.slop;
+            const path = target.dataset.slop || target.dataset.slopRef || attrsOf(target)[0]?.[1];
+            if (!path) return;
             const s = setOf(path);
             if (state.tab === 'repeats' && s) show('repeats', s.paths[0]);
             else show(state.tab === 'slop' && hasSlop(path) ? 'slop' : 'all', path);
@@ -1155,7 +1264,8 @@ const Slop = (() => {
     function start(options = {}) {
         Object.assign(config, options);
         fill();
-        document.querySelectorAll('[data-slop-meter]').forEach(buildMeter);
+        document.querySelectorAll('[data-slop-meter]').forEach((x) => { meters.push(buildMeter(x)); });
+        new MutationObserver((changes) => changes.forEach((c) => c.addedNodes.forEach(added))).observe(document.body, { childList: true, subtree: true });
         theme(true);
         const watch = new MutationObserver(theme);
         [document.documentElement, document.body].forEach((x) => watch.observe(x, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }));
@@ -1175,5 +1285,5 @@ const Slop = (() => {
         fetch('/__slop').then((res) => (res.ok ? res.text() : '')).then((s) => { if (s === 'slop-editor') ed = editor('file'); else local(); }).catch(local);
     }
 
-    return { ...core, get, set, remove, entries, categories, html, words, fill, refresh, onChange, reveal, start, get text() { return text; } };
+    return { ...core, get, set, remove, entries, categories, html, words, fill, refresh, onChange, reveal, meter, start, get text() { return text; } };
 })();

@@ -2,15 +2,18 @@
 // The slop editor's command line. No dependencies.
 //
 //   slop-editor install <page.html>   add the text block and inline slop.css and slop.js into a page (it stays one file)
+//              [--auto]               also move the page's static prose (paragraphs, headings, list items) into the block
 //   slop-editor sync <page.html …>    re-inline the current slop.css and slop.js into pages that have them
 //   slop-editor edit <page.html>      serve the page's folder on localhost with the editor, which saves into the file
 //              [--port 5178] [--no-open]
 //   slop-editor check <page.html>     what the text is made of, the repeated text, and texts the page uses but the block lacks
+//   slop-editor history <page.html>   what each git commit did to who wrote what (a page, or a block kept as .json)
 import http from 'node:http';
 import net from 'node:net';
 import { readFile, writeFile, rename, stat } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
+import { markup } from './markup.mjs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -22,6 +25,7 @@ const BLOCK = /(<script type="application\/json" id="slop-text">)([\s\S]*?)(<\/s
 const Slop = new Function(`${await readFile(path.join(here, 'slop.js'), 'utf8')}\nreturn Slop;`)();
 
 function readBlock(html, name) {
+    if (name.endsWith('.json')) return JSON.parse(html); // a block kept in a file of its own
     const m = BLOCK.exec(html);
     if (!m) throw new Error(`${name} has no <script type="application/json" id="slop-text"> block (run install first)`);
     return JSON.parse(m[2]);
@@ -61,11 +65,36 @@ function install(html) {
     return `${out}\n${tag}<script>Slop.start();</script>\n`;
 }
 
+// --auto: the page's prose goes into the block as AI text, and Slop.start() runs once the marked elements exist
+function auto(html) {
+    const found = markup(html);
+    const block = readBlock(html, 'the page');
+    const { version, ...have } = block;
+    const added = [];
+    for (const [group, texts] of Object.entries(found.block)) {
+        if (group === 'version') continue;
+        for (const [key, value] of Object.entries(texts)) {
+            if (have[group]?.[key] !== undefined) continue;
+            (have[group] ||= {})[key] = value;
+            added.push(`${group}.${key}`);
+        }
+    }
+    let out = found.html.replace(BLOCK, (_, a, __, b) => a + serialize({ version, ...have }) + b);
+    if (!/Slop\.start\(/.test(out)) {
+        const script = /<script id="slop-js">[\s\S]*?<\/script>/.exec(out);
+        const end = script.index + script[0].length;
+        const direct = out.lastIndexOf('data-slop="') < script.index; // every marked element is above the script
+        const call = direct ? '<script>Slop.start();</script>'
+            : '<script>document.readyState === \'loading\' ? document.addEventListener(\'DOMContentLoaded\', () => Slop.start()) : Slop.start();</script>';
+        out = out.slice(0, end) + '\n' + call + out.slice(end);
+    }
+    return { html: out, texts: found.texts.length, skipped: found.skipped };
+}
+
 /* ---------- check ---------- */
 
-async function check(file) {
-    const html = await readFile(file, 'utf8');
-    const text = readBlock(html, file);
+// every text in a block: [[path, value]]
+function textsOf(text) {
     const entries = [];
     const walk = (node, at) => Object.entries(node).forEach(([k, v]) => {
         if (!at.length && (k === 'version' || k.startsWith('_'))) return; // not text
@@ -73,9 +102,17 @@ async function check(file) {
         else if (v && typeof v === 'object') walk(v, [...at, k]);
     });
     walk(text, []);
+    return entries;
+}
+const labelIn = (text) => (id) => text._categories?.[id]?.label || Slop.BUILTIN[id]?.label || id;
+
+async function check(file) {
+    const html = await readFile(file, 'utf8');
+    const text = readBlock(html, file);
+    const entries = textsOf(text);
     const paths = new Set(entries.map(([p]) => p));
     const m = Slop.makeup(entries.map(([, v]) => v));
-    const label = (id) => text._categories?.[id]?.label || Slop.BUILTIN[id]?.label || id;
+    const label = labelIn(text);
     console.log(`${path.relative(process.cwd(), file)} (version ${text.version})`);
     console.log(`  ${m.allWords.toLocaleString()} words in ${entries.length} texts`);
     console.log(`  ${Object.entries(m.counts).sort((a, b) => b[1] - a[1]).map(([id, n]) => `${label(id)} ${Slop.percent(n / m.letters)}`).join(' · ')}`);
@@ -83,10 +120,12 @@ async function check(file) {
     console.log(`  ${left.length} ${left.length === 1 ? 'text has' : 'texts have'} slop left`);
     const sets = Slop.repeats(entries);
     if (sets.length) console.log(`  repeated text:\n${sets.map((r) => `    "${r.words.slice(0, 60)}${r.words.length > 60 ? '…' : ''}": ${r.paths.join(', ')}`).join('\n')}`);
-    // texts the page asks for: data-slop="…" in a tag, Slop.html('…') and Slop.words('…') in its code. Only a whole
+    // texts the page asks for: data-slop="…" (or data-slop-ref, data-slop-attr) in a tag, Slop.html('…') and Slop.words('…') in its code. Only a whole
     // string counts: Slop.html('caption' + n) builds its path, so its start isn't a text
     const page = html.replace(SCRIPT, '').replace(STYLE, '').replace(BLOCK, ''); // the page's own markup and code
-    const used = new Set([...page.matchAll(/<[a-z][^>]*?\bdata-slop="([^"]+)"/gi), ...page.matchAll(/Slop\.(?:html|words|get)\(\s*(['"`])([\w.-]+)\1\s*[,)]/g)].map((m) => m[2] ?? m[1]));
+    const used = new Set([...page.matchAll(/<[a-z][^>]*?\bdata-slop(?:-ref)?="([^"]+)"/gi), ...page.matchAll(/Slop\.(?:html|words|get)\(\s*(['"`])([\w.-]+)\1\s*[,)]/g)].map((m) => m[2] ?? m[1]));
+    // and data-slop-attr="alt:hero.photo title:hero.tip"
+    [...page.matchAll(/<[a-z][^>]*?\bdata-slop-attr="([^"]+)"/gi)].forEach((m) => m[1].split(/\s+/).forEach((pair) => { const at = pair.slice(pair.indexOf(':') + 1); if (pair.includes(':') && at) used.add(at); }));
     const missing = [...used].filter((p) => !paths.has(p));
     if (missing.length) console.log(`  missing from the block: ${missing.join(', ')}`);
     return missing.length ? 1 : 0;
@@ -193,16 +232,59 @@ async function edit(file, { port, fixed, open }) {
     await next();
 }
 
+/* ---------- history ---------- */
+
+// what each commit did to who wrote what, from git's copies of the file: letters gained or lost by each category, and
+// the share of slop after it. It's the author's own account, commit by commit, not proof of who wrote what
+async function history(file) {
+    const git = (...a) => new Promise((resolve, reject) => execFile('git', a, { cwd: path.dirname(file), maxBuffer: 1 << 28 }, (e, out) => (e ? reject(e) : resolve(out))));
+    const name = `./${path.basename(file)}`;
+    let log;
+    try {
+        log = await git('log', '--reverse', '--format=%h%x09%ad%x09%s', '--date=short', '--', name);
+    } catch {
+        throw new Error(`${file} isn't in a git repository`);
+    }
+    const versions = log.split('\n').filter(Boolean).map((line) => { const [sha, date, subject] = line.split('\t'); return { sha, date, subject }; });
+    versions.push({ sha: null, date: 'now', subject: '(not committed)' });
+    console.log(path.relative(process.cwd(), file));
+    let before = null;
+    let shown = 0;
+    for (const v of versions) {
+        let text;
+        try {
+            text = readBlock(v.sha ? await git('show', `${v.sha}:${name}`) : await readFile(file, 'utf8'), file);
+        } catch { continue; } // no block in that version yet
+        const entries = textsOf(text);
+        const key = JSON.stringify(entries);
+        if (before?.key === key) continue; // the commit didn't change the text
+        const m = Slop.makeup(entries.map(([, val]) => val));
+        const label = labelIn(text);
+        // in the editor's order: mine, approved, the page's own, data, slop
+        const rank = (id) => ({ me: 0, ok: 1, data: 3, ai: 4 })[id] ?? 2;
+        const ids = [...new Set([...Object.keys(before?.m.counts ?? {}), ...Object.keys(m.counts)])].sort((a, b) => rank(a) - rank(b));
+        const change = ids.map((id) => [id, (m.counts[id] ?? 0) - (before?.m.counts[id] ?? 0)]).filter(([, n]) => n)
+            .map(([id, n]) => `${label(id)} ${n > 0 ? '+' : '−'}${Math.abs(n).toLocaleString()}`).join(' · ');
+        const slop = Slop.percent(m.letters ? (m.counts.ai ?? 0) / m.letters : 0);
+        console.log(`  ${v.date.padEnd(10)} ${(v.sha ?? '').padEnd(9)} slop ${slop.padStart(4)}  ${change || 'only moved or reworded'}  ${v.subject}`);
+        before = { key, m };
+        shown++;
+    }
+    if (!shown) console.log('  no versions with a text block');
+    else console.log('\nLetters gained or lost by each category, per commit. It\'s what the author recorded, not proof of who wrote what.');
+}
+
 /* ---------- main ---------- */
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : null; };
 const portFlag = flag('--port') ?? process.env.PORT;
 const port = Number(portFlag ?? 5178);
+const autoFlag = args.includes('--auto') && args.splice(args.indexOf('--auto'), 1);
 const noOpen = args.includes('--no-open') && args.splice(args.indexOf('--no-open'), 1);
 const [cmd, ...rest] = args;
 const files = rest.map((f) => path.resolve(f));
-const usage = 'usage: slop-editor install <page.html> | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …>';
+const usage = 'usage: slop-editor install <page.html> [--auto] | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …> | history <page.html>';
 
 if (cmd !== 'help' && cmd && !files.length) {
     console.error(usage);
@@ -211,10 +293,21 @@ if (cmd !== 'help' && cmd && !files.length) {
 try {
     if (cmd === 'install') {
         for (const file of files) {
-            await writeFile(file, install(await readFile(file, 'utf8')));
+            let html = install(await readFile(file, 'utf8'));
+            if (autoFlag) {
+                const done = auto(html);
+                html = done.html;
+                console.log(`${path.relative(process.cwd(), file)}: moved ${done.texts} texts into the block`
+                    + (done.skipped ? `; ${done.skipped} more have markup it can't carry (spans, line breaks, icons): do those by hand` : ''));
+            }
+            await writeFile(file, html);
             await sync(file);
         }
-        console.log('\nNext: mark text elements with data-slop="group.key" and put their words in the slop-text block\n'
+        if (autoFlag) {
+            console.log('\nStatic prose is done. Still yours to check: text the page\'s code builds (Slop.html / Slop.words), text shown only\n'
+                + 'sometimes (Slop.reveal), and anything that reads an element\'s text before Slop.start() or after an edit (Slop.onChange).\n'
+                + 'Then: slop-editor check <page.html>, and slop-editor edit <page.html>');
+        } else console.log('\nNext: mark text elements with data-slop="group.key" and put their words in the slop-text block\n'
             + '(as AI text to start). Add <div data-slop-meter></div> at the top (readers see\n'
             + 'nothing there unless you pick a pie chart or colors in the editor). Call Slop.start() once Slop.vars is\n'
             + 'set and before anything reads the text. Then: slop-editor edit <page.html>');
@@ -226,6 +319,8 @@ try {
         let status = 0;
         for (const file of files) status |= await check(file);
         process.exitCode = status;
+    } else if (cmd === 'history') {
+        for (const file of files) await history(file);
     } else {
         console.log(usage);
     }

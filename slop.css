@@ -39,7 +39,8 @@ html.slop-dark {
 .slop-pct { margin-left: 5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .slop-pie { flex: none; width: 18px; height: 18px; border-radius: 50%; background: color-mix(in srgb, currentColor 20%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 15%, transparent); }
 .slop-legend { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; font-weight: 600; }
-.slop-key { display: inline-flex; align-items: center; gap: 5px; }
+.slop-key { display: inline-flex; align-items: center; gap: 5px; border-radius: 4px; cursor: default; }
+.slop-key:focus-visible { outline: 2px solid var(--_accent); outline-offset: 2px; }
 .slop-key i { width: 8px; height: 8px; border-radius: 50%; }
 
 /* ---------- the editor ---------- */
@@ -120,6 +121,7 @@ html.slop-dark {
 /* tabs */
 .sp-tabs { display: flex; gap: 2px; margin: 0 12px; padding: 3px; border-radius: 10px; background: var(--_sunk); }
 .sp-tabs button { flex: 1; padding: 6px 8px; border: 0; border-radius: 7px; background: none; color: var(--_ink-2); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.sp-tabs button[hidden] { display: none; }
 .sp-tabs button span { margin-left: 3px; font-weight: 500; color: var(--_ink-3); font-variant-numeric: tabular-nums; }
 .sp-tabs button[aria-selected="true"] { background: var(--_bg); color: var(--_ink); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
 .sp-tabs button:hover:not([aria-selected="true"]) { color: var(--_ink); }
@@ -150,6 +152,8 @@ html.slop-dark {
 }
 .sp-field textarea:hover { border-color: var(--_rule); }
 .sp-field textarea:focus { outline: none; border-color: var(--_accent); background: var(--_bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--_accent) 18%, transparent); }
+.sp-kind { flex: none; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--_accent) 12%, transparent); font: 600 0.68rem var(--_font); color: var(--_accent); }
+.sp-kind[hidden] { display: none; }
 .sp-unseen { flex: none; padding: 1px 6px; border: 0; border-radius: 4px; background: var(--_sunk); font: 600 0.68rem var(--_font); color: var(--_ink-3) !important; cursor: help; }
 .sp-unseen:not(:disabled) { color: var(--_accent) !important; cursor: pointer; }
 .sp-unseen:not(:disabled):hover { background: color-mix(in srgb, var(--_accent) 12%, transparent); }

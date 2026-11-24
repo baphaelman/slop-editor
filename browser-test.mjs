@@ -16,12 +16,15 @@ const FIXTURE = {
     version: 1,
     _show: 'colors',
     nav: { how: 'How it works' },
-    how: { title: 'How it works', p1: 'The agent wrote this.', p2: ['There are {n} things, ', { me: 'I promise' }, '.'], note: 'Shown only sometimes.' },
+    how: { title: 'How it works', p1: 'The agent wrote this.', p2: ['There are {n} things, ', { me: 'I promise' }, '.'], note: 'Shown only sometimes.', photo: 'A diagram of the agent at work.' },
+    deep: { far: 'Far down a panel that scrolls.' },
 };
 const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title>
 <link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
 <div data-slop-meter></div><nav><a href="#" data-slop="nav.how"></a></nav>
 <h1 data-slop="how.title"></h1><p data-slop="how.p1"></p><p data-slop="how.p2"></p><p id="note"></p>
+<img id="photo" data-slop-attr="alt:how.photo title:how.photo" width="40" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+<div id="panel" style="height: 120px; overflow: auto"><div style="height: 900px"></div><button data-slop-ref="deep.far">Far down a panel that scrolls.</button></div>
 <script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
 <script src="slop.js"></script>
 <script>
@@ -73,6 +76,47 @@ try {
         assert.equal(await p.$eval('.slop-meter', (m) => m.dataset.show), 'colors');
         assert.ok(await p.evaluate(() => document.documentElement.classList.contains('slop-on')));
         assert.ok((await p.textContent('.slop-legend')).includes('%'));
+    });
+
+    await check('a meter added later is built; with a path, it measures only that group', async () => {
+        await p.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<section id="sec"><div data-slop-meter="how"></div><p id="sec-ai" data-slop="how.p1"></p><p data-slop="how.p2"></p></section>'));
+        await p.waitForSelector('#sec .slop-meter .slop-key');
+        const want = await p.evaluate(() => {
+            const m = Slop.makeup(Slop.entries().filter(([at]) => at.startsWith('how.')).map(([, v]) => v));
+            return Math.round(((m.counts.me ?? 0) / m.letters) * 100);
+        });
+        assert.match(await p.textContent('#sec .slop-key[data-id="me"]'), new RegExp(`${want}%`));
+        assert.notEqual(await p.textContent('#sec .slop-legend'), await p.textContent('.slop-legend'));
+    });
+
+    await check('a section\'s switch follows the page\'s until flipped, and colors only its section', async () => {
+        const color = (sel) => p.$eval(sel, (x) => getComputedStyle(x.querySelector('.slop-ai') ?? x).color);
+        const ink = await p.evaluate(() => getComputedStyle(document.body).color);
+        assert.equal(await p.$eval('#sec .slop-meter-btn', (b) => b.getAttribute('aria-pressed')), 'true');
+        await p.click('#sec .slop-meter-btn');
+        assert.ok(await p.$eval('#sec', (x) => x.classList.contains('slop-off')));
+        assert.equal(await color('#sec-ai'), ink);
+        assert.notEqual(await color('[data-slop="how.p1"]'), ink); // the rest of the page stays colored
+        await p.click('.slop-meter-btn'); // the page's switch, off
+        await p.click('#sec .slop-meter-btn'); // this section's, on
+        assert.ok(!(await p.evaluate(() => document.documentElement.classList.contains('slop-on'))));
+        assert.notEqual(await color('#sec-ai'), ink);
+        assert.equal(await color('[data-slop="how.p1"]'), ink);
+        await p.click('.slop-meter-btn');
+    });
+
+    await check('pointing at a tag dims everyone else\'s words, in its section', async () => {
+        await p.hover('#sec .slop-key[data-id="me"]');
+        assert.equal(await p.$eval('#sec', (x) => x.dataset.slopOnly), 'me');
+        assert.equal(await p.$eval('#sec-ai .slop-ai, #sec-ai', (x) => getComputedStyle(x.querySelector('.slop-ai') ?? x).opacity), '0.3');
+        assert.equal(await p.$eval('[data-slop="how.p1"]', (x) => getComputedStyle(x.querySelector('.slop-ai') ?? x).opacity), '1');
+        await p.mouse.move(0, 0);
+        assert.equal(await p.$eval('#sec', (x) => x.dataset.slopOnly), undefined);
+        await p.evaluate(() => document.getElementById('sec').remove());
+    });
+
+    await check('onChange returns a function that unsubscribes', async () => {
+        assert.ok(await p.evaluate(() => { let n = 0; const off = Slop.onChange(() => n++); off(); return typeof off === 'function'; }));
     });
 
     await p.click('.slop-edit-btn');
@@ -133,6 +177,29 @@ try {
         assert.equal(await p.textContent('#note'), 'Shown only sometimes.');
         await p.click(`${field('how.p1')} textarea`);
         assert.equal(await p.textContent('#note'), '');
+    });
+
+    await check('alt text is filled, and has its own tab', async () => {
+        assert.equal(await p.getAttribute('#photo', 'alt'), 'A diagram of the agent at work.');
+        assert.equal(await p.textContent('.sp-tabs [data-tab="hidden"] span'), '1');
+        await p.click('.sp-tabs [data-tab="hidden"]');
+        assert.deepEqual(await p.$$eval('.sp-body .sp-field', (fs) => fs.map((f) => f.dataset.path)), ['how.photo']);
+        assert.equal(await p.textContent(`${field('how.photo')} .sp-kind`), 'alt text');
+        const ta = p.locator(`${field('how.photo')} textarea`);
+        await ta.click();
+        assert.ok(await p.$eval('#photo', (x) => x.classList.contains('slop-focus')));
+        await ta.evaluate((t) => t.setSelectionRange(t.value.length, t.value.length));
+        await p.keyboard.insertText(' Mine.');
+        await p.waitForFunction(() => document.getElementById('photo').alt.endsWith('Mine.'));
+        await p.keyboard.press('Meta+z');
+        await p.click('.sp-tabs [data-tab="all"]');
+    });
+
+    await check('a [data-slop-ref] text is found, and scrolled to inside a panel that scrolls', async () => {
+        assert.equal(await p.$eval('#panel', (x) => x.scrollTop), 0);
+        await p.click(`${field('deep.far')} textarea`);
+        assert.ok(await p.$eval('[data-slop-ref]', (x) => x.classList.contains('slop-focus')));
+        await p.waitForFunction(() => document.getElementById('panel').scrollTop > 500);
     });
     await p.close();
 

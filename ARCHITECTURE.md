@@ -8,7 +8,9 @@ For contributors and their agents. [README.md](README.md) is the reference for p
 |---|---|
 | `slop.js` | Everything that runs in the page, as one global `Slop`: the format (pure functions, also used by Node), the Slop-o-meter, the editor. Outside a browser it returns only the format functions. |
 | `slop.css` | The meter's and the editor's styles. Category colors aren't here: slop.js writes them into a `<style id="slop-colors">` at runtime. |
-| `cli.mjs` | `slop-editor install / sync / edit / check`. No dependencies. It loads the format functions from slop.js itself. |
+| `cli.mjs` | `slop-editor install / sync / edit / check / history`. No dependencies. It loads the format functions from slop.js itself. |
+| `markup.mjs` | `install --auto`: finds a page's static prose (p, h1–h6, li, dd, dt, figcaption, blockquote with plain words, links, bold, italic, code) and returns the page with `data-slop` on each and the words for the block. It skips nav, forms, buttons, code, scripts and anything with other markup (spans, `<br>`, icons), and counts those it skipped. The rest is the agent's job. |
+| `react.mjs` | `slop-editor/react`: `SlopText`, `SlopMeter`, `slopAttrs` and `useSlop`, written with `createElement` so it needs no build. It reads the global `Slop`, so slop.js loads first. |
 | `index.html` | The demo and landing page. It links `slop.js` and `slop.css` instead of inlining them. |
 | `test.mjs` | Unit tests of the format. |
 | `browser-test.mjs` | A smoke test of the editor in headless Chrome, on a fixture page of its own (not the demo). |
@@ -58,10 +60,10 @@ It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- �
 | Section | What's in it |
 |---|---|
 | the format | The pure functions, up to `const core`: `plain`, `applyEdit`, `reattribute`, `unslop`/`reslop`, `assign`, `runs`, `render`, `readable`, `makeup`, `share`, `percent`, `repeats`. Outside a browser, `Slop` is only these. The CLI and `test.mjs` load slop.js with `new Function`. |
-| the block | Parsing the block, `get`/`set`/`entries`, `html`/`words` (which also record that a text is on the page), `fill`, `reveal`, `onChange`. |
+| the block | Parsing the block, `get`/`set`/`entries`, `html`/`words` (which also record that a text is on the page), `fill`, `added` (what a single-page app draws after `start`), `reveal`, `onChange`. |
 | categories and their colors | `colorOf`, `categories`, the generated stylesheet, the pies. |
 | colors follow the page | Reads the page's actual background and sets `.slop-dark` on `<html>`. |
-| Slop-o-meter | The readers' switch, pie and legend, and `_show`. |
+| Slop-o-meter | The readers' switch, pie and legend, and `_show`. A meter with a path measures that group and switches its section: `slop-on`/`slop-off` on the section, which the generated stylesheet reads. |
 | the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
 | the end | `refresh`, `remove`, `start`, and the public object. |
 
@@ -87,10 +89,12 @@ Keep these unless the maintainer changes them.
 4. **Readers see nothing unless the page chooses otherwise.** Agents install this on pages whose owners may not want it shown. The other choices are a pie chart, or colors (the pie plus a switch that colors the words). When a page shows colors, the switch starts on unless the reader turned it off. While the editor is open, the author always sees colors.
 5. **Saving is deliberate.** A Save button with a count (and ⌘S), Revert on each changed text, a prompt before leaving with unsaved changes, and no autosave. A save rewrites an HTML file that may be open elsewhere, so each write should be one someone chose, and Revert always has a fixed point to go back to.
 6. **Undo restores authorship too.** ⌘Z inside a text is the browser's undo, but the restored words get back their earlier authors (`applyEdit`'s `was`). Otherwise undoing a deletion would make the AI's words yours. ⌘Z elsewhere undoes the last switch, mark, revert or category deletion.
-7. **The editor opens where the work is**: on Repeats if a repeated text still has slop, else on Slop left if any text has slop, else on All. The tabs are ordered the same way.
-8. **Marking changes who wrote words, never the words.** Focus a text and a row of categories offers "Mark all as" or "Mark selection as". Deleting a category gives its words back to the AI.
-9. **No dependencies and no build.** Two files work in any page, and the CLI uses only Node's built-ins.
-10. **The demo page has exceptions that stay in `index.html`:**
+7. **Where words appear isn't who wrote them.** Alt text, tooltips and labels are texts like any other, by whoever wrote them, with a tab of their own (**Hidden**) because colors can't show them. Never a category.
+8. **It's honest, not proven.** The block is the author's account. Don't present anything to readers as verification.
+9. **The editor opens where the work is**: on Repeats if a repeated text still has slop, else on Slop left if any text has slop, else on All. The tabs are ordered the same way.
+10. **Marking changes who wrote words, never the words.** Focus a text and a row of categories offers "Mark all as" or "Mark selection as". Deleting a category gives its words back to the AI.
+11. **No dependencies and no build.** Two files work in any page, and the CLI uses only Node's built-ins.
+12. **The demo page has exceptions that stay in `index.html`:**
     - the Slop-o-meter has its own band at the top, with a 56px pie;
     - the "Try it" note colors each category's share in that category's color (so those labels are in code), with a 44px pie beside it.
 
@@ -102,6 +106,8 @@ Keep these unless the maintainer changes them.
 - **Switches would slide on every redraw.** `render()` adds `.sp-still` for two frames to turn transitions off.
 - **The per-text ⌘Z history lives in the open editor.** It resets when a field is redrawn (switching tabs, or a switch in the Slop left tab).
 - **Once picked, a category has one color for both themes.** The defaults follow the page's background.
+- **A section switched off sits inside `html.slop-on`.** That's why the generated rules are `:where(.slop-on) .slop-<id>:not(:where(.slop-off) .slop-<id>)` and not a nearest-ancestor rule. `:where` keeps them about as easy to override as the old `html.slop-on .slop-<id>`.
+- **Meters can leave and come back.** A single-page app moves a meter's element or redraws it. `paintMeters` drops meters that aren't in the document, and the MutationObserver in `start` (or `Slop.meter`) takes them back.
 - **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css`. `index.html` links the files, so it doesn't.
 
 ## Running and testing

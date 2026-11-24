@@ -1,6 +1,6 @@
 {
   "name": "slop-editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A slop editor: track who wrote every word on a page (the AI, you, or nobody), then read the slop and make it yours.",
   "homepage": "https://baphaelman.github.io/slop-editor/",
   "repository": {
@@ -12,8 +12,16 @@
   "bin": {
     "slop-editor": "cli.mjs"
   },
+  "exports": {
+    "./slop.js": "./slop.js",
+    "./slop.css": "./slop.css",
+    "./react": "./react.mjs",
+    "./package.json": "./package.json"
+  },
   "files": [
     "cli.mjs",
+    "markup.mjs",
+    "react.mjs",
     "slop.js",
     "slop.css",
     "README.md",
@@ -35,6 +43,14 @@
   ],
   "author": "Raphael Bajet",
   "license": "MIT",
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "playwright-core": "^1.65.1"
   }
