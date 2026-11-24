@@ -262,7 +262,28 @@ const Slop = (() => {
         return [...byWords].filter(([, paths]) => paths.length > 1).map(([words, paths]) => ({ words, paths }));
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, wordsOf, paragraphsOf, vars };
+    // a copy of the block saved in the browser, carried over to a page the author has changed since: text by text,
+    // the copy's value stays where the page's is still the one the copy was based on, and the page's wins where the
+    // author changed, added or removed it. Groups (and _categories) merge key by key; what the copy added keeps its
+    // place after the key it followed
+    function rebase(base, mine, page) {
+        const group = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+        if (!group(base) || !group(mine) || !group(page)) return JSON.stringify(page) === JSON.stringify(base) ? mine : page;
+        const keys = Object.keys(page);
+        Object.keys(mine).forEach((k, i, order) => {
+            if (keys.includes(k)) return;
+            const after = order.slice(0, i).reverse().find((x) => keys.includes(x));
+            keys.splice(after === undefined ? 0 : keys.indexOf(after) + 1, 0, k);
+        });
+        const out = {};
+        keys.forEach((k) => {
+            const v = rebase(base[k], mine[k], page[k]);
+            if (v !== undefined) out[k] = v;
+        });
+        return out;
+    }
+
+    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -547,7 +568,7 @@ const Slop = (() => {
 
     const storage = (area) => ({
         get: (k) => { try { return area().getItem(k); } catch { return null; } },
-        set: (k, v) => { try { area().setItem(k, v); } catch { /* optional */ } },
+        set: (k, v) => { try { area().setItem(k, v); return true; } catch { return false; } },
         drop: (k) => { try { area().removeItem(k); } catch { /* optional */ } },
     });
     const store = storage(() => localStorage);
@@ -1366,7 +1387,9 @@ const Slop = (() => {
             if (stale) { status('This page is out of date: reload it to save (copy any edits first)', 'error'); return; }
             const body = JSON.stringify(text);
             if (mode === 'local') {
-                store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, text: JSON.parse(body) }));
+                // with the page as it was published, so the copy can be carried over to the author's next version
+                const kept = store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, baseText: JSON.parse(original), text: JSON.parse(body) }));
+                if (!kept) { status("Couldn't save in this browser", 'error'); return; }
                 saved = JSON.parse(body);
                 undo = null;
                 keepDraft();
@@ -1578,12 +1601,20 @@ const Slop = (() => {
         [document.documentElement, document.body].forEach((x) => watch.observe(x, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }));
         matchMedia('(prefers-color-scheme: dark)').addEventListener('change', theme);
         setMeter(store.get('slop-o-meter') !== 'off'); // on unless this reader turned it off
-        // the browser editor: what this visitor changed last time, if the page hasn't changed since
+        // the browser editor: what this visitor changed last time. If the author has published a new version since,
+        // their changes win and the visitor's stay everywhere else (a copy saved before 0.4 has no baseText, so it's dropped)
         const local = () => {
             if (options.edit !== 'local') return;
+            const key = `slop-text:${location.pathname}`;
             try {
-                const saved = JSON.parse(store.get(`slop-text:${location.pathname}`));
+                const saved = JSON.parse(store.get(key));
                 if (saved?.base === text.version) { text = saved.text; applyColors(); changed(); }
+                else if (saved?.baseText && saved.text) {
+                    text = rebase(saved.baseText, saved.text, text);
+                    store.set(key, JSON.stringify({ base: text.version, baseText: JSON.parse(original), text }));
+                    applyColors();
+                    changed();
+                }
             } catch { /* nothing saved */ }
             ed = editor('local');
         };

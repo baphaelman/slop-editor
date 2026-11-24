@@ -302,6 +302,49 @@ try {
     });
     await p.close();
 
+    // ---------- the browser editor after the author publishes a new version ----------
+    const republished = await fixture();
+    p = await open(`file://${republished}`);
+    await check('edits saved in the browser survive a new version: the author\'s changes win, the rest stays', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        for (const at of ['how.p1', 'how.title']) {
+            const ta = p.locator(`${field(at)} textarea`);
+            await ta.click();
+            await ta.press('End');
+            await p.keyboard.type(' Mine.');
+        }
+        await p.click('.sp-save');
+        assert.equal(await p.textContent('.sp-save'), 'Saved');
+        const next = JSON.parse(JSON.stringify(FIXTURE));
+        Object.assign(next, { version: 2 });
+        next.how.title = 'How it all works';
+        next.list.p3 = 'Third, new.';
+        await writeFile(republished, page(next));
+        await p.reload();
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: ' Mine.' }]);
+        assert.equal(await get(p, 'how.title'), 'How it all works');
+        assert.equal(await get(p, 'list.p3'), 'Third, new.');
+        assert.equal(await p.evaluate(() => Slop.text.version), 2);
+        assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent)), ['First item.', 'Second, all mine.', 'Third, new.']);
+        assert.equal(await p.textContent('.sp-save'), 'Saved');
+    });
+    await check('a copy saved without the page it was based on (before 0.4) is dropped on a new version', async () => {
+        await p.evaluate((key) => localStorage.setItem(key, JSON.stringify({ base: 1, text: { version: 1, how: { p1: 'Old copy.' } } })), `slop-text:${new URL(`file://${republished}`).pathname}`);
+        await p.reload();
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+    await check('a save the browser refuses says so', async () => {
+        await p.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('blocked'); }; });
+        await p.click('.slop-edit-btn');
+        await all(p);
+        await p.click(`${field('how.p1')} .sp-toggle`);
+        await p.click('.sp-save');
+        assert.equal(await p.textContent('.sp-status'), "Couldn't save in this browser");
+        assert.match(await p.textContent('.sp-save'), /^Save 1/);
+    });
+    await p.close();
+
     // ---------- the file editor, under `slop-editor edit` ----------
     const file = await fixture();
     const server = spawn(process.execPath, [path.join(here, 'cli.mjs'), 'edit', file, '--no-open'], { stdio: ['ignore', 'pipe', 'inherit'] });

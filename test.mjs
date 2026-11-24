@@ -73,6 +73,20 @@ test('repeated text: the same words in several places, whoever wrote each copy',
     assert.deepEqual(sets, [{ words: 'How it works', paths: ['nav.how', 'how.title', 'footer.how'] }]);
 });
 
+test('rebase: a copy saved in the browser keeps its edits where the author didn\'t change the text', () => {
+    const base = { version: 1, _show: 'pie', _categories: { bob: { label: 'Bob' } }, a: { t: 'Title', p1: 'One.', p2: 'Two.', gone: 'Old.' } };
+    const mine = { version: 1, _show: 'colors', _categories: { bob: { label: 'Bob' }, sue: { label: 'Sue' } }, a: { t: [{ ok: 'Title' }], p1: [{ me: 'Mine.' }], p3: 'Added here.', p2: 'Two.', gone: 'Old.' } };
+    const page = { version: 2, _show: 'pie', _categories: { bob: { label: 'Robert' } }, a: { t: 'Title', p1: 'One.', p2: 'Two, rewritten.', p4: 'New.' }, b: { t: 'A new section' } };
+    const out = Slop.rebase(base, mine, page);
+    assert.deepEqual(out, {
+        version: 2, _show: 'colors', _categories: { bob: { label: 'Robert' }, sue: { label: 'Sue' } },
+        a: { t: [{ ok: 'Title' }], p1: [{ me: 'Mine.' }], p3: 'Added here.', p2: 'Two, rewritten.', p4: 'New.' }, b: { t: 'A new section' },
+    });
+    assert.deepEqual(Object.keys(out.a), ['t', 'p1', 'p3', 'p2', 'p4']);
+    // a text the copy removed stays removed, unless the author changed it
+    assert.deepEqual(Slop.rebase({ a: { x: '1', y: '2' } }, { a: {} }, { a: { x: '1', y: '3' } }), { a: { y: '3' } });
+});
+
 test('paragraphs: a blank line splits a text, each part keeping its authors', () => {
     assert.deepEqual(Slop.paragraphsOf('One line\nand the next'), ['One line\nand the next']);
     assert.deepEqual(Slop.paragraphsOf(['First. ', { me: 'Mine.\n\nSecond, ' }, 'by the AI.\n  \n\n']), [['First. ', { me: 'Mine.' }], [{ me: 'Second, ' }, 'by the AI.']]);

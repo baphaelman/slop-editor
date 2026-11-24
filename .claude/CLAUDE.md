@@ -32,7 +32,7 @@ After any change the maintainer can see, update the lab page and send its link: 
    - Each change is one paragraph with a number for good, counted from 1 within its release, across its parts (`CHANGES` in the page's script): a new change takes its release's next number, and none is ever renumbered or reused. Small updates that aren't features (like adding the numbers) get no section or number.
    - Text is AI text, terse. Never write `me` pieces: that's the maintainer's own words.
    - Lab-only controls (like the + look picker) are plain HTML, not texts in the block.
-3. Run `node cli.mjs sync <file>` to inline the current `slop.js` and `slop.css`, and bump the block's `version` so browsers drop their saved copies.
+3. Run `node cli.mjs sync <file>` to inline the current `slop.js` and `slop.css`. Keep the block's `version` as it is unless the update changes the demo's own text: a new version makes browsers drop the edits the maintainer saved there.
 4. Publish it with `url` set to the link above.
 
 Reply with the link and a short list of where to see each change for yourself, numbered with the same numbers the page gives them and grouped under the release, e.g. "0.3.0 · 17. Edit text → All → 0.3.0: point at the + under any paragraph".

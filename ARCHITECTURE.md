@@ -61,7 +61,7 @@ It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- â
 
 | Section | What's in it |
 |---|---|
-| the format | The pure functions, up to `const core`: `plain`, `applyEdit`, `reattribute`, `unslop`/`reslop`, `assign`, `runs`, `render`, `readable`, `makeup`, `share`, `percent`, `repeats`. Outside a browser, `Slop` is only these. The CLI and `test.mjs` load slop.js with `new Function`. |
+| the format | The pure functions, up to `const core`: `plain`, `applyEdit`, `reattribute`, `unslop`/`reslop`, `assign`, `runs`, `render`, `readable`, `makeup`, `share`, `percent`, `repeats`, `rebase`. Outside a browser, `Slop` is only these. The CLI and `test.mjs` load slop.js with `new Function`. |
 | the block | Parsing the block, `get`/`set`/`entries`, `html`/`paragraphs`/`words` (which also record that a text is on the page), `fill` (with `fillOne`, `spill` and `fillList`), `added` (what a single-page app draws after `start`), `reveal`, `onChange`. |
 | categories and their colors | `colorOf`, `categories`, the generated stylesheet, the pies. |
 | colors follow the page | Reads the page's actual background and sets `.slop-dark` on `<html>`. |
@@ -77,7 +77,7 @@ Read `applyEdit` and `runs` first. Everything else builds on them.
 
 - `start()` picks the editor:
   - On `localhost`, `127.0.0.1` or `[::1]`, it sends `GET /__slop`. The answer `slop-editor` means the page is served by `slop-editor edit`, so the editor saves into the file.
-  - Otherwise, with `edit: 'local'`, it saves in `localStorage`, keyed by the page's path. A saved copy is used only if it was based on the page's current `version`.
+  - Otherwise, with `edit: 'local'`, it saves in `localStorage`, keyed by the page's path, as `{base, baseText, text}`: the page's `version` and block as published, and the saved block. When the page's `version` has changed since, `rebase` merges the three text by text: the saved value stays where the page's still matches `baseText`, the page's wins where the author changed, added or removed it (groups and `_categories` key by key). A copy without `baseText` (saved before 0.4) is dropped. A save the browser refuses says "Couldn't save in this browser".
   - Otherwise there's no editor.
 - `slop-editor edit` serves only the page's folder, on 127.0.0.1. `POST /__slop` takes the whole block. Saves run one at a time and are written to a `.saving` file that's then renamed over the page.
 - `slop-editor edit` starts at port 5178 and moves on from any port where something already answers, on 127.0.0.1 or on ::1. Checking both matters because `localhost` can mean either, and dev servers such as Vite often listen on ::1 only.
