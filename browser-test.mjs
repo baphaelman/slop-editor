@@ -38,6 +38,24 @@ const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>
   Slop.start(location.protocol === 'file:' ? { edit: 'local' } : {});
 </script></body></html>`;
 
+// lists the page didn't mark: one that is, scroll steps (data-b), paragraphs in two parents, and one opted out
+const LISTS = {
+    version: 1,
+    auto: { title: 'Unmarked', p1: 'One.', p2: 'Two.' },
+    steps: { p1: 'Step one.', p2: 'Step two.' },
+    split: { p1: 'Here.', p2: 'There.' },
+    off: { p1: 'Off one.', p2: 'Off two.' },
+};
+const listsPage = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Lists</title>
+<link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
+<div id="auto"><h2 data-slop="auto.title"></h2><p class="lede" data-slop="auto.p1"></p><p class="lede" data-slop="auto.p2"></p><aside>Not a text.</aside></div>
+<div id="steps"><p data-b="0" data-slop="steps.p1"></p><p data-b="1" data-slop="steps.p2"></p></div>
+<div><p data-slop="split.p1"></p></div><div><p data-slop="split.p2"></p></div>
+<div id="off" data-slop-list="off"><p data-slop="off.p1"></p><p data-slop="off.p2"></p></div>
+<script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
+<script src="slop.js"></script>
+<script>Slop.start({ edit: 'local' });</script></body></html>`;
+
 async function fixture() {
     const dir = await mkdtemp(path.join(tmpdir(), 'slop-editor-'));
     await Promise.all(['slop.js', 'slop.css'].map((f) => copyFile(path.join(here, f), path.join(dir, f))));
@@ -342,6 +360,33 @@ try {
         await p.click('.sp-save');
         assert.equal(await p.textContent('.sp-status'), "Couldn't save in this browser");
         assert.match(await p.textContent('.sp-save'), /^Save 1/);
+    });
+    await p.close();
+
+    // ---------- lists without marking ----------
+    const lists = await fixture();
+    await writeFile(lists, listsPage(LISTS));
+    p = await open(`file://${lists}`);
+    await check('a group\'s paragraphs in alike elements with one parent are a list without marking', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        const plus = (at) => p.$$eval(`${field(at)} .sp-insert`, (xs) => xs.length);
+        assert.equal(await plus('auto.p1'), 1);
+        assert.equal(await plus('auto.title'), 0);
+        // scroll steps (data-b="0", "1"), paragraphs in two parents, and data-slop-list="off" aren't lists
+        for (const at of ['steps.p1', 'split.p1', 'off.p1']) assert.equal(await plus(at), 0, at);
+        assert.match(await p.textContent(`${field('auto.p2')} .sp-flabel`), /Paragraph 2/);
+        await p.click(`${field('auto.p1')} .sp-insert`);
+        await p.keyboard.insertText('Added.');
+        const shown = () => p.$$eval('#auto > *', (xs) => xs.map((x) => `${x.tagName}.${[...x.classList].filter((c) => !c.startsWith('slop-')).join(' ')}:${x.textContent}`));
+        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
+        await p.click('.sp-save');
+        // the page still has two of them; the saved one is drawn in its place
+        await p.reload();
+        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
+        assert.equal(await p.$$eval('#steps > p, #off > p', (xs) => xs.length), 4);
     });
     await p.close();
 

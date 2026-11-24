@@ -15,7 +15,8 @@
 
    Elements with data-slop="group.key" are filled from the block. Code renders the rest with Slop.html(path). An
    element with data-slop-list="group" shows each text in that group in a copy of its first child, and the editor can
-   add and remove texts there (data-slop-list-ref: the page draws them itself).
+   add and remove texts there (data-slop-list-ref: the page draws them itself). A group's paragraphs in alike elements
+   with one parent are a list without marking (data-slop-list="off" on the parent: not one).
    An element with data-slop-meter becomes the Slop-o-meter switch. Under `slop-editor edit`, the page also gets the
    editor, which saves back into the file; with Slop.start({edit: 'local'}) it gets one that saves in the browser. */
 const Slop = (() => {
@@ -283,7 +284,30 @@ const Slop = (() => {
         return out;
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, wordsOf, paragraphsOf, vars };
+    // a group's paragraphs (keys p1, p2…) are a list without marking when the page has two or more of them in
+    // elements that share one parent and are alike: the same tag and the same other attributes, so steps told apart by
+    // an attribute (data-b="0", "1"…) aren't one. [{path, parent, tag, attrs}] → Map group → parent
+    const isParagraph = (key) => /^p\d+$/.test(key);
+    function listsIn(items) {
+        const byGroup = new Map();
+        items.forEach((x) => {
+            const keys = x.path.split('.');
+            if (keys.length < 2 || !isParagraph(keys.at(-1))) return;
+            const g = keys.slice(0, -1).join('.');
+            if (!byGroup.has(g)) byGroup.set(g, []);
+            byGroup.get(g).push(x);
+        });
+        const look = (x) => `${x.tag}\n${JSON.stringify(Object.entries(x.attrs ?? {}).sort())}`;
+        const out = new Map();
+        byGroup.forEach((xs, g) => {
+            const [a] = xs;
+            if (xs.length < 2 || a.parent == null || new Set(xs.map((x) => x.path)).size < xs.length) return;
+            if (xs.every((x) => x.parent === a.parent && look(x) === look(a))) out.set(g, a.parent);
+        });
+        return out;
+    }
+
+    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -401,10 +425,33 @@ const Slop = (() => {
     // a list: an element with data-slop-list="group" shows the group's paragraphs (p1, p2, …), in order, each in a copy
     // of the first. The group's other texts (a title, a caption) and the element's other children stay where they
     // are. (With data-slop-list-ref, the page draws them itself.) Either way, the editor can add and remove paragraphs
-    const isParagraph = (key) => /^p\d+$/.test(key);
     const templates = new WeakMap(); // list → the element its paragraphs are copies of
+    // lists the page didn't mark (listsIn): [data-slop] elements, filled here, not drawn by the page's code. Its
+    // paragraphs that aren't on the page yet are drawn after the others, as in a marked list. Once found, a list stays
+    // one while its element is on the page. data-slop-list="off" on the parent opts out
+    const autos = new Map(); // parent → group
+    const marked = (x) => (x.dataset.slopList && x.dataset.slopList !== 'off' ? x.dataset.slopList : '');
+    const listOf = (box) => marked(box) || autos.get(box);
+    // an element's attributes but data-slop and the classes slop.js adds
+    const own = (x) => Object.fromEntries([...x.attributes].filter((a) => a.name !== 'data-slop')
+        .map((a) => [a.name, a.name === 'class' ? [...x.classList].filter((c) => !c.startsWith('slop-')).sort().join(' ') : a.value])
+        .filter(([name, v]) => name !== 'class' || v));
+    function findLists() {
+        autos.forEach((g, box) => { if (!box.isConnected) autos.delete(box); });
+        const taken = new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => marked(x) || x.dataset.slopListRef).filter(Boolean));
+        autos.forEach((g) => taken.add(g));
+        const els = [...document.querySelectorAll('[data-slop]')].filter((x) => !x.closest('.slop-panel'));
+        listsIn(els.map((x) => ({ path: x.dataset.slop, parent: x.parentElement, tag: x.tagName, attrs: own(x) }))).forEach((box, g) => {
+            if (taken.has(g) || box.dataset.slopList === 'off' || autos.has(box)) return;
+            // the page's code shows one of them some other way: not a list of ours
+            const paths = textKeys(nodeAt(text, g)).filter(isParagraph).map((k) => `${g}.${k}`);
+            if (paths.some((p) => rendered.has(p) || revealers.has(p) || elementsOf(p).some((x) => !x.dataset.slop && !x.dataset.slopMore))) return;
+            autos.set(box, g);
+        });
+    }
     function fillList(box) {
-        const at = box.dataset.slopList;
+        const at = listOf(box);
+        if (!at) return;
         const ours = (x) => x.dataset.slop?.startsWith(`${at}.`) && isParagraph(x.dataset.slop.slice(at.length + 1));
         if (!templates.has(box)) {
             const first = [...box.children].find(ours);
@@ -431,7 +478,9 @@ const Slop = (() => {
         });
     }
     const fill = (root = document) => {
+        if (root === document || root.matches?.('[data-slop]') || root.querySelector?.('[data-slop]')) findLists();
         root.querySelectorAll('[data-slop-list]').forEach(fillList);
+        autos.forEach((g, box) => { if (root.contains(box) && !marked(box)) fillList(box); });
         root.querySelectorAll('[data-slop], [data-slop-attr]').forEach(fillOne);
         // paragraphs whose element the page took away, or no longer shows that text in
         root.querySelectorAll('[data-slop-more]').forEach((c) => {
@@ -669,7 +718,8 @@ const Slop = (() => {
         return title && title.length <= 32 ? title : human(key);
     };
     // the groups the page shows as lists, where the editor can add and remove texts
-    const listed = () => new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => x.dataset.slopList || x.dataset.slopListRef));
+    const listed = () => new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => marked(x) || x.dataset.slopListRef).filter(Boolean)
+        .concat([...autos].filter(([box]) => box.isConnected).map(([, g]) => g)));
     // keys[i], for people. In a list, a paragraph is named by where it is: "Paragraph 3", even when its key is p7
     function keyName(keys, i) {
         const group = keys.slice(0, i).join('.');

@@ -87,6 +87,19 @@ test('rebase: a copy saved in the browser keeps its edits where the author didn\
     assert.deepEqual(Slop.rebase({ a: { x: '1', y: '2' } }, { a: {} }, { a: { x: '1', y: '3' } }), { a: { y: '3' } });
 });
 
+test('lists without marking: a group\'s paragraphs in alike elements with one parent', () => {
+    const p = (path, parent, attrs, tag = 'P') => ({ path, parent, tag, attrs });
+    const found = (...items) => Object.fromEntries(Slop.listsIn(items));
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.title', 'A', {}, 'H2'), p('a.p2', 'A', {}), p('b.c.p1', 'B', { class: 'x' }), p('b.c.p2', 'B', { class: 'x' })), { a: 'A', 'b.c': 'B' });
+    // scroll steps told apart by an attribute aren't a list
+    assert.deepEqual(found(p('pure.p1', 'S', { 'data-b': '0' }), p('pure.p2', 'S', { 'data-b': '1' })), {});
+    // nor paragraphs in two parents, in different tags, or one on its own
+    assert.deepEqual(found(p('ring.p1', 'C', {}), p('ring.p2', 'Q', {}), p('ring.p3', 'Q', {})), {});
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.p2', 'A', {}, 'LI')), {});
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.note', 'A', {})), {});
+    assert.deepEqual(found(p('a.p1', 'A', { id: 'x' }), p('a.p2', 'A', {})), {});
+});
+
 test('paragraphs: a blank line splits a text, each part keeping its authors', () => {
     assert.deepEqual(Slop.paragraphsOf('One line\nand the next'), ['One line\nand the next']);
     assert.deepEqual(Slop.paragraphsOf(['First. ', { me: 'Mine.\n\nSecond, ' }, 'by the AI.\n  \n\n']), [['First. ', { me: 'Mine.' }], [{ me: 'Second, ' }, 'by the AI.']]);

@@ -78,7 +78,7 @@ In the page:
 
 Code can render texts itself with `Slop.html('intro.p1')` (HTML), `Slop.paragraphs('intro.p1')` (HTML, one string per paragraph) or `Slop.words('intro.p1')` (plain text). Put `data-slop-ref="intro.p1"` on the element that shows them (a button or link the page builds) and the editor can still find, highlight and scroll to it. Unlike `data-slop`, nothing fills it.
 
-**Lists.** Where the page shows a group's paragraphs (`p1`, `p2`, …) in one element, say so, and the editor can add and remove paragraphs there:
+**Lists.** Where the page shows a group's paragraphs (`p1`, `p2`, …) in one element, the editor can add and remove paragraphs there. That's found without marking when two or more of them are `data-slop` elements with the same parent, the same tag and the same other attributes (so `<p data-b="0">`, `<p data-b="1">` scroll steps aren't a list). Put `data-slop-list="off"` on the parent to opt out. Or say so:
 
 ```html
 <div data-slop-list="intro">            <!-- a copy of the first paragraph for each p<n> in "intro", in order -->
@@ -88,7 +88,7 @@ Code can render texts itself with `Slop.html('intro.p1')` (HTML), `Slop.paragrap
 </div>
 ```
 
-All of the group's paragraphs have to be in that element. A new one goes after the paragraph before it. A page that draws them itself (React and the like) puts `data-slop-list-ref="intro"` on the element around them instead, draws one per paragraph key, in order, and redraws after an edit.
+All of the group's paragraphs have to be in that element; the ones the page has no element for are drawn after the others. A new one goes after the paragraph before it. A page that draws them itself (React and the like) puts `data-slop-list-ref="intro"` on the element around them instead, draws one per paragraph key, in order, and redraws after an edit.
 
 **Words the page doesn't show as words** (alt text for an image that doesn't load, a tooltip, a label for screen readers, a placeholder) go in attributes: `<img data-slop-attr="alt:hero.photo">`, or several at once, `data-slop-attr="alt:hero.photo title:hero.tip"`. They're filled as plain text. The editor gives them a tab of their own, **Hidden**, since readers' colors can't show them.
 
