@@ -377,29 +377,36 @@ const Slop = (() => {
         });
         if (copies.length) spills.set(el, copies); else spills.delete(el);
     }
-    // a list: an element with data-slop-list="group" shows each text in that group, in order, in a copy of its first
-    // child. (With data-slop-list-ref, the page draws them itself.) Either way, the editor can add and remove texts there
-    const templates = new WeakMap(); // list → the element its texts are copies of
+    // a list: an element with data-slop-list="group" shows the group's paragraphs (p1, p2, …), in order, each in a copy
+    // of the first. The group's other texts (a title, a caption) and the element's other children stay where they
+    // are. (With data-slop-list-ref, the page draws them itself.) Either way, the editor can add and remove paragraphs
+    const isParagraph = (key) => /^p\d+$/.test(key);
+    const templates = new WeakMap(); // list → the element its paragraphs are copies of
     function fillList(box) {
         const at = box.dataset.slopList;
+        const ours = (x) => x.dataset.slop?.startsWith(`${at}.`) && isParagraph(x.dataset.slop.slice(at.length + 1));
         if (!templates.has(box)) {
-            if (!box.firstElementChild) return;
-            const t = box.firstElementChild.cloneNode(false);
+            const first = [...box.children].find(ours);
+            if (!first) return;
+            const t = first.cloneNode(false);
             ['id', 'data-slop'].forEach((a) => t.removeAttribute(a));
             templates.set(box, t);
         }
-        const paths = textKeys(nodeAt(text, at)).map((k) => `${at}.${k}`);
-        const have = new Map([...box.children].filter((x) => x.dataset.slop).map((x) => [x.dataset.slop, x]));
+        const paths = textKeys(nodeAt(text, at)).filter(isParagraph).map((k) => `${at}.${k}`);
+        const have = new Map([...box.children].filter(ours).map((x) => [x.dataset.slop, x]));
         have.forEach((x, p) => { if (!paths.includes(p)) { spill(x, []); x.remove(); } });
-        let last = null;
-        paths.forEach((p) => {
-            let x = have.get(p);
-            if (!x) {
-                x = templates.get(box).cloneNode(false);
-                x.dataset.slop = p;
-            }
-            if (last ? last.nextElementSibling !== x : box.firstElementChild !== x) (last ? last.after(x) : box.prepend(x));
-            last = spills.get(x)?.at(-1) ?? x;
+        // a new one goes after the paragraph before it (and the paragraphs that one spilled into), or else before the
+        // one after it
+        const shown = (p) => [...box.children].find((x) => x.dataset.slop === p);
+        paths.forEach((p, i) => {
+            if (have.has(p)) return;
+            const x = templates.get(box).cloneNode(false);
+            x.dataset.slop = p;
+            const before = paths.slice(0, i).reverse().map(shown).find(Boolean);
+            const after = paths.slice(i + 1).map(shown).find(Boolean);
+            if (before) (spills.get(before)?.at(-1) ?? before).after(x);
+            else if (after) after.before(x);
+            else box.append(x);
         });
     }
     const fill = (root = document) => {
@@ -645,8 +652,8 @@ const Slop = (() => {
     // keys[i], for people. In a list, a paragraph is named by where it is: "Paragraph 3", even when its key is p7
     function keyName(keys, i) {
         const group = keys.slice(0, i).join('.');
-        if (!/^p\d+$/.test(keys[i]) || !listed().has(group)) return human(keys[i]);
-        return `Paragraph ${textKeys(nodeAt(text, group)).indexOf(keys[i]) + 1}`;
+        if (!isParagraph(keys[i]) || !listed().has(group)) return human(keys[i]);
+        return `Paragraph ${textKeys(nodeAt(text, group)).filter(isParagraph).indexOf(keys[i]) + 1}`;
     }
     // where a text is, for people: "Introduction · Paragraph 2"
     const where = (path) => {
@@ -919,7 +926,7 @@ const Slop = (() => {
                 render();
             });
             const group = keys.slice(0, -1).join('.');
-            const listItem = !all && group && listed().has(group);
+            const listItem = !all && group && listed().has(group) && isParagraph(keys.at(-1));
             if (listItem) {
                 wrap.insert = plusRow(path, group);
                 wrap.append(wrap.insert);
@@ -1009,13 +1016,10 @@ const Slop = (() => {
 
         /* lists: where the page shows a group as a list, texts can be added and taken out */
         const inList = (key) => [...listed()].some((g) => g === key || g.startsWith(`${key}.`));
-        // a key for a new text in a group, like `like` (p3 → p<next>), and never one the group had since it was opened
-        function freshKey(group, like) {
-            const prefix = /^(.*?)\d+$/.exec(like)?.[1] || 'p';
-            const taken = new Set([text, saved, JSON.parse(original)].flatMap((root) => Object.keys(nodeAt(root, group) ?? {})));
-            let n = 1 + Math.max(0, ...[...taken].map((k) => (k.startsWith(prefix) && /^\d+$/.test(k.slice(prefix.length)) ? +k.slice(prefix.length) : 0)));
-            while (taken.has(`${prefix}${n}`)) n++;
-            return `${prefix}${n}`;
+        // a key for a new paragraph in a group: the p<n> after any the group had in the file, at the last save or now
+        function freshKey(group) {
+            const taken = [text, saved, JSON.parse(original)].flatMap((root) => Object.keys(nodeAt(root, group) ?? {})).filter(isParagraph);
+            return `p${1 + Math.max(0, ...taken.map((k) => +k.slice(1)))}`;
         }
         // a text put in a group after the key `after` (or first), the rest in the order they were
         function insert(group, after, key, value) {
@@ -1026,7 +1030,7 @@ const Slop = (() => {
             set(group, next);
         }
         function addText(group, after) {
-            const key = freshKey(group, after ?? textKeys(nodeAt(saved, group))[0] ?? '');
+            const key = freshKey(group);
             withUndo('Added a paragraph', () => insert(group, after, key, ''));
             show('all', `${group}.${key}`);
         }
@@ -1084,8 +1088,8 @@ const Slop = (() => {
         // in the All tab, each list's removed texts until the next save, each with Restore, and a way to start an empty one
         function listRows(key, box) {
             [...listed()].filter((g) => g === key || g.startsWith(`${key}.`)).forEach((group) => {
-                const now = textKeys(nodeAt(text, group));
-                const was = textKeys(nodeAt(saved, group));
+                const now = textKeys(nodeAt(text, group)).filter(isParagraph);
+                const was = textKeys(nodeAt(saved, group)).filter(isParagraph);
                 const fieldOf = (k) => [...box.querySelectorAll(':scope > .sp-field')].find((f) => f.dataset.path === `${group}.${k}`);
                 was.forEach((k, i) => {
                     if (now.includes(k)) return;
@@ -1108,7 +1112,7 @@ const Slop = (() => {
                 const start = el('button', 'sp-cat-add sp-start', '+ Paragraph');
                 start.type = 'button';
                 start.title = `Start "${where(group)}" again`;
-                start.addEventListener('click', () => addText(group, null));
+                start.addEventListener('click', () => addText(group, Object.keys(nodeAt(text, group) ?? {}).at(-1) ?? null)); // at the group's end
                 box.append(start);
             });
         }

@@ -18,14 +18,14 @@ const FIXTURE = {
     nav: { how: 'How it works' },
     how: { title: 'How it works', p1: 'The agent wrote this.', p2: ['There are {n} things, ', { me: 'I promise' }, '.'], note: 'Shown only sometimes.', photo: 'A diagram of the agent at work.' },
     deep: { far: 'Far down a panel that scrolls.' },
-    list: { p1: 'First item.', p2: ['Second, ', { me: 'all mine' }, '.'] },
+    list: { title: 'A list', p1: 'First item.', p2: ['Second, ', { me: 'all mine' }, '.'] },
 };
 const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title>
 <link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
 <div data-slop-meter></div><nav><a href="#" data-slop="nav.how"></a></nav>
 <h1 data-slop="how.title"></h1><p data-slop="how.p1"></p><p data-slop="how.p2"></p><p id="note"></p>
 <img id="photo" data-slop-attr="alt:how.photo title:how.photo" width="40" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
-<div id="list" data-slop-list="list"><p data-slop="list.p1"></p></div>
+<div id="list" data-slop-list="list"><h3 data-slop="list.title"></h3><p data-slop="list.p1"></p><aside id="aside">Not a text.</aside></div>
 <div id="panel" style="height: 120px; overflow: auto"><div style="height: 900px"></div><button data-slop-ref="deep.far">Far down a panel that scrolls.</button></div>
 <script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
 <script src="slop.js"></script>
@@ -239,11 +239,13 @@ try {
         await p.waitForFunction(() => document.getElementById('panel').scrollTop > 500);
     });
 
-    const order = () => p.evaluate(() => Object.keys(Slop.text.list));
+    const order = () => p.evaluate(() => Object.keys(Slop.text.list).filter((k) => k !== 'title'));
     const shown = () => p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent));
     await check('a list draws a copy of its first child for each text in its group', async () => {
         assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.dataset.slop)), ['list.p1', 'list.p2']);
         assert.deepEqual(await shown(), ['First item.', 'Second, all mine.']);
+        // the group's other texts and the element's other children stay put, and only paragraphs get a trash can
+        assert.deepEqual(await p.$$eval('#list > *', (xs) => xs.map((x) => x.dataset.slop ?? x.id)), ['list.title', 'list.p1', 'list.p2', 'aside']);
     });
 
     await check('a blank line starts a paragraph of its own on the page', async () => {
@@ -295,6 +297,8 @@ try {
         assert.deepEqual(await order(), ['p1', 'p2', 'p3']); // where it was at the last save: after p1
         assert.deepEqual(await get(p, 'list.p2'), ['Second, ', { me: 'all mine' }, '.']);
         await p.waitForFunction(() => document.querySelectorAll('#list > p').length === 3);
+        assert.deepEqual(await p.$$eval('#list > *', (xs) => xs.map((x) => x.dataset.slop ?? x.id)), ['list.title', 'list.p1', 'list.p2', 'list.p3', 'aside']);
+        assert.equal(await p.$$eval(`${field('list.title')} .sp-trash, ${field('list.title')} .sp-insert`, (xs) => xs.length), 0);
     });
     await p.close();
 
@@ -332,7 +336,7 @@ try {
             await p.keyboard.press('Meta+s');
             await p.waitForFunction(() => document.querySelector('.sp-save').textContent === 'Saved');
             const saved = await block(file);
-            assert.deepEqual(Object.keys(saved.list), ['p1', 'p3', 'p2']);
+            assert.deepEqual(Object.keys(saved.list), ['title', 'p1', 'p3', 'p2']);
             assert.deepEqual(saved.list.p3, [{ me: 'Saved in the middle.' }]);
             await p.reload();
             assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent)), ['First item.', 'Saved in the middle.', 'Second, all mine.']);
