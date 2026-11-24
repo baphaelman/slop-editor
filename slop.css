@@ -4,7 +4,7 @@
    <html> when it's dark, and writes the colors into a stylesheet of its own. --slop-font and --slop-mono set the
    editor's fonts. */
 html {
-  --_accent: #6d35d0;
+  --_accent: #6d35d0; --_danger: #c8173f;
   --_font: var(--slop-font, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
   --_mono: var(--slop-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
   /* the editor's own surface */
@@ -12,7 +12,7 @@ html {
   --_shadow: 0 1px 2px rgb(30 20 40 / 0.06), 0 18px 48px rgb(30 20 40 / 0.16);
 }
 html.slop-dark {
-  --_accent: #b892ff;
+  --_accent: #b892ff; --_danger: #ff6b8a;
   --_bg: #1b1920; --_sunk: #131217; --_ink: #f1eef5; --_ink-2: #bdb7c6; --_ink-3: #8a8494; --_rule: #2f2c36;
   --_shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 18px 48px rgb(0 0 0 / 0.5);
 }
@@ -145,18 +145,49 @@ html.slop-dark {
 .sp-body > .sp-field { margin-left: 2px; }
 .sp-flash { background: color-mix(in srgb, var(--_accent) 14%, transparent); }
 .sp-flabel { display: flex; align-items: center; gap: 6px; min-height: 24px; }
-.sp-flabel label { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.76rem; font-weight: 600; color: var(--_ink-3); }
+.sp-fend { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.sp-flabel label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.76rem; font-weight: 600; color: var(--_ink-3); }
+/* the box's own letters are see-through: the words behind it show each author's color */
+.sp-ink { position: relative; }
+.sp-field textarea, .sp-mirror { padding: 7px 9px; font: 0.86rem/1.5 var(--_mono); letter-spacing: normal; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; tab-size: 4; border: 1px solid transparent; border-radius: 8px; }
+.sp-mirror { position: absolute; inset: 0; margin: 0; overflow: hidden; color: var(--_ink); background: var(--_sunk); pointer-events: none; }
+.sp-ink:focus-within .sp-mirror { background: var(--_bg); }
 .sp-field textarea {
-  display: block; width: 100%; margin: 0; padding: 7px 9px; resize: none; overflow: hidden;
-  font: 0.86rem/1.5 var(--_mono); color: var(--_ink); background: var(--_sunk); border: 1px solid transparent; border-radius: 8px;
+  position: relative; display: block; width: 100%; margin: 0; resize: none; overflow: hidden;
+  color: transparent; caret-color: var(--_ink); background: transparent;
 }
+.sp-field textarea::selection { color: transparent; background: color-mix(in srgb, var(--_accent) 28%, transparent); }
 .sp-field textarea:hover { border-color: var(--_rule); }
-.sp-field textarea:focus { outline: none; border-color: var(--_accent); background: var(--_bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--_accent) 18%, transparent); }
+.sp-field textarea:focus { outline: none; border-color: var(--_accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--_accent) 18%, transparent); }
 .sp-kind { flex: none; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--_accent) 12%, transparent); font: 600 0.68rem var(--_font); color: var(--_accent); }
 .sp-kind[hidden] { display: none; }
 .sp-unseen { flex: none; padding: 1px 6px; border: 0; border-radius: 4px; background: var(--_sunk); font: 600 0.68rem var(--_font); color: var(--_ink-3) !important; cursor: help; }
 .sp-unseen:not(:disabled) { color: var(--_accent) !important; cursor: pointer; }
 .sp-unseen:not(:disabled):hover { background: color-mix(in srgb, var(--_accent) 12%, transparent); }
+/* a list's removed texts, until the next save, and a way to start an emptied one */
+.sp-trash { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 4px; border: 0; border-radius: 5px; background: none; font: 600 0.72rem var(--_font); color: var(--_ink-3) !important; cursor: pointer; }
+.sp-trash:hover { background: var(--_sunk); color: var(--_danger) !important; }
+.sp-trash:focus-visible { outline: 2px solid var(--_accent); outline-offset: 1px; }
+.sp-trash[data-armed] { color: var(--_danger) !important; background: color-mix(in srgb, var(--_danger) 10%, transparent); }
+.sp-removing .sp-mirror { background: color-mix(in srgb, var(--_danger) 9%, var(--_bg)); }
+.sp-removing textarea { border-color: var(--_danger) !important; }
+/* the + under a text in a list, on the text you're on: a hairline with a + in the middle. Pointing at it colors both
+   and names it */
+.sp-insert {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 18px; margin: 1px 0 -4px; padding: 0; border: 0; background: none;
+  font: 600 0.72rem var(--_font); color: var(--_ink-3) !important; cursor: pointer;
+  opacity: 0; transition: opacity .15s; /* only on the text you're on */
+}
+.sp-field:hover .sp-insert, .sp-field:focus-within .sp-insert { opacity: 1; }
+.sp-insert::before, .sp-insert::after { content: ""; flex: 1; height: 1px; background: var(--_rule); transition: background .15s; }
+.sp-plus { display: grid; place-items: center; width: 16px; height: 16px; border: 1px solid var(--_rule); border-radius: 50%; background: var(--_bg); font-size: 0.8rem; line-height: 1; transition: border-color .15s, background .15s, color .15s; }
+.sp-insert-label { max-width: 0; overflow: hidden; white-space: nowrap; opacity: 0; transition: max-width .2s, opacity .2s; }
+.sp-insert:hover, .sp-insert:focus-visible { color: var(--_accent) !important; outline: none; }
+.sp-insert:hover::before, .sp-insert:hover::after, .sp-insert:focus-visible::before, .sp-insert:focus-visible::after { background: var(--_accent); }
+.sp-insert:hover .sp-plus, .sp-insert:focus-visible .sp-plus { border-color: var(--_accent); background: var(--_accent); color: var(--_bg); }
+.sp-insert:hover .sp-insert-label, .sp-insert:focus-visible .sp-insert-label { max-width: 8em; opacity: 1; }
+.sp-gone { margin: 0 2px 12px 18px; padding: 5px 9px; border: 1px dashed var(--_rule); border-radius: 8px; font-size: 0.76rem; color: var(--_ink-3); }
+.sp-start { margin: 0 2px 14px 18px; }
 .sp-hint { padding: 2px 2px 0; font-size: 0.76rem; color: var(--_ink-2); }
 
 /* a pie of what the text is made of, and its slop switch */
@@ -200,11 +231,20 @@ html.slop-dark {
 .sp-goto:hover { border-color: var(--_ink-3); color: var(--_ink) !important; }
 .sp-pie.sp-mini { width: 10px; height: 10px; }
 
+/* a text with no words isn't on the page, except while the editor is open */
+html:not(.slop-editing) .slop-empty { display: none !important; }
+.slop-editing .slop-empty { min-height: 1em; min-height: 1lh; outline: 1px dashed color-mix(in srgb, var(--_accent) 40%, transparent); outline-offset: 3px; }
+
 /* on the page, while the editor is open */
-.slop-editing [data-slop] { cursor: text; }
-.slop-editing [data-slop]:hover { outline: 1px dashed color-mix(in srgb, var(--_accent) 60%, transparent); outline-offset: 3px; border-radius: 2px; }
+.slop-editing [data-slop], .slop-editing [data-slop-more] { cursor: text; }
+.slop-editing [data-slop]:hover, .slop-editing [data-slop-more]:hover { outline: 1px dashed color-mix(in srgb, var(--_accent) 60%, transparent); outline-offset: 3px; border-radius: 2px; }
 .slop-focus { outline: 2px solid var(--_accent) !important; outline-offset: 3px; border-radius: 2px; }
 .slop-copy { outline: 2px dashed var(--_accent) !important; outline-offset: 3px; border-radius: 2px; }
+/* where a new paragraph would go, and what Remove would take */
+.slop-insert-after { position: relative; }
+.slop-insert-after::after { content: ""; position: absolute; left: 0; right: 0; top: calc(100% + 0.5em - 1px); border-top: 2px solid var(--_accent); pointer-events: none; }
+.slop-remove-hint { outline: 2px dashed var(--_danger) !important; outline-offset: 3px; border-radius: 2px; }
+.slop-removing { outline: 2px dashed var(--_danger) !important; outline-offset: 3px; border-radius: 2px; background: color-mix(in srgb, var(--_danger) 12%, transparent); }
 
 @media (max-width: 900px) {
   .slop-panel { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 60svh; }

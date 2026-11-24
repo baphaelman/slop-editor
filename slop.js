@@ -11,7 +11,11 @@
    Inside any text: [label](url) is a link, **bold**, *italic*, `code`, [[key]] a key cap, {name} a value the page
    fills in (Slop.vars), and \ makes the next character literal.
 
-   Elements with data-slop="group.key" are filled from the block. Code renders the rest with Slop.html(path).
+   A blank line starts a new paragraph in a <p>, <li> or <dd>.
+
+   Elements with data-slop="group.key" are filled from the block. Code renders the rest with Slop.html(path). An
+   element with data-slop-list="group" shows each text in that group in a copy of its first child, and the editor can
+   add and remove texts there (data-slop-list-ref: the page draws them itself).
    An element with data-slop-meter becomes the Slop-o-meter switch. Under `slop-editor edit`, the page also gets the
    editor, which saves back into the file; with Slop.start({edit: 'local'}) it gets one that saves in the browser. */
 const Slop = (() => {
@@ -57,16 +61,31 @@ const Slop = (() => {
 
     // `value` after its plain text became `next` in the editor. An edit is one stretch replaced (typing, deleting,
     // pasting): what both versions share at the start and the end keeps its author, and the new middle is mine.
-    // Unless it's an undo or a redo: then `was`, an earlier version whose plain text is `next`, says who wrote it
-    function applyEdit(value, next, was) {
+    // Unless it's an undo or a redo: then `was`, an earlier version whose plain text is `next`, says who wrote it.
+    // `at`, the [start, end) of `value` the edit replaced (the selection typed over), when the editor knows it: typing
+    // "c" over a selected "cat" makes that "c" mine, though it matches the letter that was there
+    function applyEdit(value, next, was, at) {
         const prev = plain(value);
-        if (prev === next) return value;
+        const typedOver = at && at[1] > at[0];
+        if (prev === next && !typedOver) return value;
         let start = 0;
-        while (start < prev.length && start < next.length && prev[start] === next[start]) start++;
         let end = 0;
-        while (end < prev.length - start && end < next.length - start
-            && prev[prev.length - 1 - end] === next[next.length - 1 - end]) end++;
+        if (at && next.startsWith(prev.slice(0, at[0])) && next.endsWith(prev.slice(at[1])) && next.length - (prev.length - at[1]) >= at[0]) {
+            start = at[0];
+            end = prev.length - at[1];
+        } else {
+            while (start < prev.length && start < next.length && prev[start] === next[start]) start++;
+            while (end < prev.length - start && end < next.length - start
+                && prev[prev.length - 1 - end] === next[next.length - 1 - end]) end++;
+        }
         const authors = authorsByChar(value);
+        if (was != null && plain(was) === next) {
+            // an undo takes back what was typed: my letters at the edges of the stretch that the earlier version doesn't
+            // have as mine (an "a" typed over "agent" matches the "a" there, so it looks shared) go back with it
+            const old = authorsByChar(was);
+            while (start > 0 && authors[start - 1] === 'me' && old[start - 1] !== 'me') start--;
+            while (end > 0 && authors[prev.length - end] === 'me' && old[next.length - end] !== 'me') end--;
+        }
         const middle = was != null && plain(was) === next
             ? authorsByChar(was).slice(start, next.length - end)
             : new Array(next.length - start - end).fill('me');
@@ -126,6 +145,20 @@ const Slop = (() => {
             i++;
         }
         return out;
+    }
+
+    // a text in paragraphs: split at blank lines, each keeping its authors. Without a blank line it's one paragraph
+    function paragraphsOf(value) {
+        const text = plain(value);
+        const authors = authorsByChar(value);
+        const spans = [];
+        const gap = /\n[ \t]*\n\s*/g;
+        let at = 0;
+        for (let m; (m = gap.exec(text));) { spans.push([at, m.index]); at = m.index + m[0].length; }
+        if (!spans.length) return [value];
+        spans.push([at, text.length]);
+        const parts = spans.map(([s, e]) => fromChars(text.slice(s, e), authors.slice(s, e))).filter((p) => plain(p).trim());
+        return parts.length ? parts : [value];
     }
 
     // values the page fills in: {html, data} (data: a fact, shown in the data color; otherwise it takes the color of
@@ -229,7 +262,7 @@ const Slop = (() => {
         return [...byWords].filter(([, paths]) => paths.length > 1).map(([words, paths]) => ({ words, paths }));
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, wordsOf, vars };
+    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -251,6 +284,9 @@ const Slop = (() => {
         if (!isText(node)) { console.warn(`slop: no text at ${dotted(path)}`); return ''; }
         return node;
     }
+    const nodeAt = (root, path) => keysOf(path).reduce((node, key) => node?.[key], root);
+    // the keys of a group's texts, in order
+    const textKeys = (node) => (node && typeof node === 'object' && !isText(node) ? Object.keys(node).filter((k) => isText(node[k])) : []);
     function set(path, value) {
         const keys = keysOf(path);
         let node = text;
@@ -269,13 +305,15 @@ const Slop = (() => {
     // the texts an element holds in its attributes, from data-slop-attr="alt:hero.photo title:hero.tip": [[name, path]]
     const attrsOf = (x) => (x.dataset.slopAttr ?? '').split(/\s+/).map((s) => [s.slice(0, s.indexOf(':')), s.slice(s.indexOf(':') + 1)]).filter(([n, p]) => n && p);
     // the elements that show a text: [data-slop] ones, which fill() writes, [data-slop-ref] ones, which the page writes
-    // itself (words inside a button or a link it builds) but the editor can still find, and [data-slop-attr] ones
+    // itself (words inside a button or a link it builds) but the editor can still find, [data-slop-more] ones (the
+    // paragraphs after a blank line) and [data-slop-attr] ones
     const elementsOf = (path) => {
         const at = dotted(path);
         const q = CSS.escape(at);
-        return [...document.querySelectorAll(`[data-slop="${q}"], [data-slop-ref="${q}"], [data-slop-attr*=":${q}"]`)]
-            .filter((x) => x.dataset.slop === at || x.dataset.slopRef === at || attrsOf(x).some(([, p]) => p === at));
+        return [...document.querySelectorAll(`[data-slop="${q}"], [data-slop-ref="${q}"], [data-slop-more="${q}"], [data-slop-attr*=":${q}"]`)]
+            .filter((x) => x.dataset.slop === at || x.dataset.slopRef === at || x.dataset.slopMore === at || attrsOf(x).some(([, p]) => p === at));
     };
+    const pathOf = (x) => x.dataset.slop || x.dataset.slopRef || x.dataset.slopMore || attrsOf(x)[0]?.[1];
     // a text the page has but doesn't show as words (alt text, a tooltip, a label): the attribute it's in, or ''
     function attrOf(path) {
         const at = dotted(path);
@@ -290,6 +328,8 @@ const Slop = (() => {
     const rendered = new Set();
     const html = (path, local) => { rendered.add(dotted(path)); return render(get(path), local); };
     const words = (path, local) => { rendered.add(dotted(path)); return readable(get(path), local); };
+    // the text as HTML, one string per paragraph, for code that draws a <p> for each
+    const paragraphs = (path, local) => { rendered.add(dotted(path)); return paragraphsOf(get(path)).map((v) => render(v, local)); };
     const onPage = (path) => rendered.has(dotted(path)) || elementsOf(path).length > 0;
     // how to show a text the page shows only some of the time: Slop.reveal(path, fn), where fn puts the page in a state
     // that shows it and returns a function that undoes that. A group's key covers all its texts
@@ -298,21 +338,93 @@ const Slop = (() => {
     const revealerOf = (path) => revealers.get(dotted(path)) ?? revealers.get(keysOf(path)[0]);
     // fill every [data-slop] element (data-slop-vars: a JSON object of extra values)
     // fill an element: its words from data-slop, its attributes from data-slop-attr (as plain text)
+    // a <p>, <li> or <dd> shows a text's first paragraph, and a copy of it after it shows each of the others. An
+    // element whose text is empty gets .slop-empty, which hides it
+    const SPLITS = /^(P|LI|DD)$/;
+    const spills = new WeakMap(); // element → the copies after it
+    const ownerOf = new WeakMap(); // copy → its element
     function fillOne(el) {
         const local = el.dataset.slopVars ? JSON.parse(el.dataset.slopVars) : undefined;
         if (el.dataset.slop) {
-            const h = render(get(el.dataset.slop), local);
+            const value = get(el.dataset.slop);
+            const parts = SPLITS.test(el.tagName) ? paragraphsOf(value) : [value];
+            const h = render(parts[0], local);
             if (el.innerHTML !== h) el.innerHTML = h;
+            el.classList.toggle('slop-empty', !plain(value).trim());
+            spill(el, parts.slice(1).map((v) => render(v, local)));
         }
         attrsOf(el).forEach(([name, path]) => {
             const v = readable(get(path), local);
             if (el.getAttribute(name) !== v) el.setAttribute(name, v);
         });
     }
-    const fill = (root = document) => root.querySelectorAll('[data-slop], [data-slop-attr]').forEach(fillOne);
+    function spill(el, htmls) {
+        const copies = spills.get(el) ?? [];
+        while (copies.length > htmls.length) copies.pop().remove();
+        htmls.forEach((h, i) => {
+            let c = copies[i];
+            if (!c) {
+                c = el.cloneNode(false);
+                ['id', 'data-slop', 'data-slop-attr'].forEach((a) => c.removeAttribute(a));
+                c.classList.remove('slop-focus', 'slop-copy', 'slop-empty');
+                ownerOf.set(c, el);
+                copies.push(c);
+            }
+            c.dataset.slopMore = el.dataset.slop;
+            if (c.innerHTML !== h) c.innerHTML = h;
+            const before = i ? copies[i - 1] : el;
+            if (before.nextElementSibling !== c) before.after(c);
+        });
+        if (copies.length) spills.set(el, copies); else spills.delete(el);
+    }
+    // a list: an element with data-slop-list="group" shows each text in that group, in order, in a copy of its first
+    // child. (With data-slop-list-ref, the page draws them itself.) Either way, the editor can add and remove texts there
+    const templates = new WeakMap(); // list → the element its texts are copies of
+    function fillList(box) {
+        const at = box.dataset.slopList;
+        if (!templates.has(box)) {
+            if (!box.firstElementChild) return;
+            const t = box.firstElementChild.cloneNode(false);
+            ['id', 'data-slop'].forEach((a) => t.removeAttribute(a));
+            templates.set(box, t);
+        }
+        const paths = textKeys(nodeAt(text, at)).map((k) => `${at}.${k}`);
+        const have = new Map([...box.children].filter((x) => x.dataset.slop).map((x) => [x.dataset.slop, x]));
+        have.forEach((x, p) => { if (!paths.includes(p)) { spill(x, []); x.remove(); } });
+        let last = null;
+        paths.forEach((p) => {
+            let x = have.get(p);
+            if (!x) {
+                x = templates.get(box).cloneNode(false);
+                x.dataset.slop = p;
+            }
+            if (last ? last.nextElementSibling !== x : box.firstElementChild !== x) (last ? last.after(x) : box.prepend(x));
+            last = spills.get(x)?.at(-1) ?? x;
+        });
+    }
+    const fill = (root = document) => {
+        root.querySelectorAll('[data-slop-list]').forEach(fillList);
+        root.querySelectorAll('[data-slop], [data-slop-attr]').forEach(fillOne);
+        // paragraphs whose element the page took away, or no longer shows that text in
+        root.querySelectorAll('[data-slop-more]').forEach((c) => {
+            const el = ownerOf.get(c);
+            if (!el?.isConnected || el.dataset.slop !== c.dataset.slopMore) c.remove();
+        });
+    };
+    // the editor's "not on the page" tags, checked again once the page has drawn what changed (a text just added or
+    // restored has no element until then, and a single-page app draws later still)
+    let reseen = () => {};
+    let seenPending = false;
+    const seenSoon = () => {
+        if (seenPending) return;
+        seenPending = true;
+        requestAnimationFrame(() => { seenPending = false; reseen(); });
+    };
     // the [data-slop] elements and meters in what the page added after start (a single-page app draws late)
     function added(n) {
         if (n.nodeType !== 1 || n.closest('.slop-panel')) return;
+        seenSoon();
+        if (n.matches('[data-slop-list]')) fillList(n);
         if (n.matches('[data-slop], [data-slop-attr]')) fillOne(n);
         fill(n);
         if (n.matches('[data-slop-meter]')) meter(n);
@@ -334,6 +446,7 @@ const Slop = (() => {
             fill();
             listeners.forEach((fn) => { try { fn(); } catch (e) { console.error(e); } });
             paintMeters();
+            seenSoon();
         });
     }
 
@@ -425,11 +538,13 @@ const Slop = (() => {
 
     /* ---------- Slop-o-meter: a switch, a pie of what the page is made of, and what its colors mean ---------- */
 
-    const store = {
-        get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
-        set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* optional */ } },
-        drop: (k) => { try { localStorage.removeItem(k); } catch { /* optional */ } },
-    };
+    const storage = (area) => ({
+        get: (k) => { try { return area().getItem(k); } catch { return null; } },
+        set: (k, v) => { try { area().setItem(k, v); } catch { /* optional */ } },
+        drop: (k) => { try { area().removeItem(k); } catch { /* optional */ } },
+    });
+    const store = storage(() => localStorage);
+    const session = storage(() => sessionStorage); // this tab only: the unsaved draft
     // what readers see is the page's choice, "nothing" unless it says otherwise. While the editor is open, its
     // author sees the colors whatever readers get
     const SHOW = ['nothing', 'pie', 'colors'];
@@ -525,10 +640,18 @@ const Slop = (() => {
         const title = node && !isText(node) && isText(node.title) ? readable(node.title) : '';
         return title && title.length <= 32 ? title : human(key);
     };
+    // the groups the page shows as lists, where the editor can add and remove texts
+    const listed = () => new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => x.dataset.slopList || x.dataset.slopListRef));
+    // keys[i], for people. In a list, a paragraph is named by where it is: "Paragraph 3", even when its key is p7
+    function keyName(keys, i) {
+        const group = keys.slice(0, i).join('.');
+        if (!/^p\d+$/.test(keys[i]) || !listed().has(group)) return human(keys[i]);
+        return `Paragraph ${textKeys(nodeAt(text, group)).indexOf(keys[i]) + 1}`;
+    }
     // where a text is, for people: "Introduction · Paragraph 2"
     const where = (path) => {
-        const [g, ...rest] = keysOf(path);
-        return [groupTitle(g), ...rest.map(human)].join(' · ');
+        const keys = keysOf(path);
+        return [groupTitle(keys[0]), ...keys.slice(1).map((k, i) => keyName(keys, i + 1))].join(' · ');
     };
     const count = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
     const isLong = (path, value) => plain(value).length > 48 || /^p\d+$/.test(keysOf(path).at(-1));
@@ -622,7 +745,8 @@ const Slop = (() => {
             return true;
         }
 
-        /* the slop switch, next to a pie of what the texts are made of */
+        /* the slop switch, next to a pie of what the texts are made of. A text's or section's row takes the pie out, to
+           sit by its name, and puts the switch at the end (c.pie, c.toggle) */
         function control(paths, what, after) {
             const c = el('span', 'sp-ctl', '<span class="sp-pie" role="img"></span>'
                 + '<button type="button" class="sp-toggle" role="switch"><span class="sp-switch" aria-hidden="true"></span>slop</button>');
@@ -633,16 +757,18 @@ const Slop = (() => {
                 const done = withUndo(on ? `Approved ${what}` : `Back to slop: ${what}`, () => paths().forEach((p) => set(p, on ? unslop(get(p)) : reslop(get(p)))));
                 if (done) after?.(on);
             });
+            c.pie = c.querySelector('.sp-pie');
+            c.toggle = toggle;
             controls.push({ el: c, paths });
             return c;
         }
         function paintControl({ el: c, paths }, cats) {
-            const m = makeup(paths().map(get));
-            const pie = c.querySelector('.sp-pie');
+            const m = makeup(paths().map((p) => valueAt(text, p) ?? '')); // a text just taken out is painted once more
+            const { pie } = c;
             pie.style.background = gradient(m, cats);
             pie.title = breakdown(m, cats);
             pie.setAttribute('aria-label', pie.title);
-            const toggle = c.querySelector('.sp-toggle');
+            const { toggle } = c;
             const on = (m.counts.ai ?? 0) > 0;
             toggle.setAttribute('aria-checked', String(on));
             toggle.disabled = !on && !m.counts.ok;
@@ -739,7 +865,7 @@ const Slop = (() => {
                 assignEl.append(b);
             });
             assignLabel(input);
-            wrap.append(assignEl);
+            if (wrap.insert) wrap.insert.before(assignEl); else wrap.append(assignEl); // the + stays last
         }
         const assignLabel = (input) => {
             if (assignEl.firstChild) assignEl.firstChild.textContent = input.selectionStart === input.selectionEnd ? 'Mark all as' : 'Mark selection as';
@@ -773,11 +899,13 @@ const Slop = (() => {
             const wrap = el('div', 'sp-field');
             wrap.dataset.path = path;
             const fid = `sp-${path.replace(/\W/g, '-')}${all ? '-all' : ''}`;
-            const name = all ? `${all.paths.length} copies` : keysOf(path).slice(1).map(human).join(' · ') || human(path);
+            const keys = keysOf(path);
+            const name = all ? `${all.paths.length} copies` : keys.slice(1).map((k, i) => keyName(keys, i + 1)).join(' · ') || human(path);
             wrap.innerHTML = `<div class="sp-flabel"><label for="${fid}">${esc(name)}</label>`
-                + '<span class="sp-kind" hidden></span><button type="button" class="sp-unseen" hidden></button></div>'
-                + `<textarea id="${fid}" rows="1" spellcheck="true"></textarea><p class="sp-hint" hidden></p>`;
-            const row = wrap.querySelector('.sp-flabel');
+                + '<span class="sp-fend"><span class="sp-kind" hidden></span><button type="button" class="sp-unseen" hidden></button></span></div>'
+                + `<div class="sp-ink"><div class="sp-mirror" aria-hidden="true"></div><textarea id="${fid}" rows="1" spellcheck="true"></textarea></div>`
+                + '<p class="sp-hint" hidden></p>';
+            const row = wrap.querySelector('.sp-fend'); // the meter sits by the name; the rest at the end of the row
             const input = wrap.querySelector('textarea');
             input.value = plain(value);
             if (!isLong(path, value)) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
@@ -790,6 +918,12 @@ const Slop = (() => {
                 withUndo(`Reverted "${all ? all.words : where(path)}"`, () => paths().forEach((p) => { if (savedAt(p) !== undefined) set(p, savedAt(p)); }));
                 render();
             });
+            const group = keys.slice(0, -1).join('.');
+            const listItem = !all && group && listed().has(group);
+            if (listItem) {
+                wrap.insert = plusRow(path, group);
+                wrap.append(wrap.insert);
+            }
             row.append(revert);
             if (!all) {
                 const rep = el('button', 'sp-rep');
@@ -797,8 +931,9 @@ const Slop = (() => {
                 rep.addEventListener('click', () => { const s = setOf(path); if (s) show('repeats', s.paths[0]); });
                 row.append(rep);
             }
-            // a copy's switch changes that copy only, and says so. A Repeats card's switch changes every copy
-            row.append(control(paths, all ? count(all.paths.length, 'copy', 'copies') : `"${where(path)}"`, all ? null : (approved) => {
+            // a copy's switch changes that copy only, and says so. A Repeats card's switch changes every copy.
+            // The row reads: name and pie, then at the end anything else, the trash can and the switch
+            const ctl = control(paths, all ? count(all.paths.length, 'copy', 'copies') : `"${where(path)}"`, all ? null : (approved) => {
                 const others = (setOf(path)?.paths ?? []).filter((p) => p !== path);
                 if (!others.length) return;
                 const how = approved ? unslop : reslop;
@@ -806,8 +941,17 @@ const Slop = (() => {
                     label: others.length === 1 ? 'Change it too' : 'Change them too',
                     run: () => withUndo(`${approved ? 'Approved' : 'Back to slop:'} ${count(others.length + 1, 'copy', 'copies')}`, () => others.forEach((p) => set(p, how(get(p))))),
                 });
-            }));
-            input.addEventListener('input', (e) => edit(paths(), input, /^history(Undo|Redo)$/.test(e.inputType)));
+            });
+            row.before(ctl.pie);
+            if (listItem) row.append(removeButton(path, wrap));
+            row.append(ctl);
+            // the stretch a keystroke or a paste replaces: the selection, or nothing at the caret
+            input.addEventListener('beforeinput', () => { input.at = [input.selectionStart, input.selectionEnd]; });
+            input.addEventListener('input', (e) => {
+                const restoring = /^history(Undo|Redo)$/.test(e.inputType);
+                edit(paths(), input, restoring, restoring || e.isComposing || /Composition/.test(e.inputType) ? undefined : input.at);
+                input.at = undefined;
+            });
             ['select', 'keyup', 'pointerup'].forEach((t) => input.addEventListener(t, () => assignLabel(input)));
             input.addEventListener('focus', () => { focus(path, all, input, wrap); showAssign(wrap, input, paths()); });
             input.addEventListener('blur', () => {
@@ -821,6 +965,7 @@ const Slop = (() => {
             });
             wrap.querySelector('.sp-unseen').addEventListener('click', () => input.focus());
             wrap.input = input;
+            wrap.mirror = wrap.querySelector('.sp-mirror');
             wrap.rep = wrap.querySelector('.sp-rep');
             wrap.kind = wrap.querySelector('.sp-kind');
             wrap.revert = revert;
@@ -832,16 +977,144 @@ const Slop = (() => {
             const det = el('details', 'sp-group', `<summary><span class="sp-gname">${esc(groupTitle(key))}</span><span class="sp-gnote"></span></summary>`);
             det.dataset.group = key;
             det.open = state.open.has(key) || state.tab === 'hidden'; // there are few, so all of them show
-            const all = entries(text[key], [key]).map(([p]) => p);
-            det.querySelector('summary').append(control(() => all, `"${groupTitle(key)}"`));
+            const all = () => entries(text[key], [key]).map(([p]) => p);
+            const ctl = control(all, `"${groupTitle(key)}"`);
+            det.querySelector('.sp-gname').after(ctl.pie);
+            det.querySelector('summary').append(ctl);
             det.addEventListener('toggle', () => {
                 if (det.open) { state.open.add(key); det.querySelectorAll('textarea').forEach(grow); } else state.open.delete(key);
             });
             paths.forEach((p) => det.append(field(p)));
+            if (state.tab === 'all') listRows(key, det);
             return det;
         }
 
+        // the words behind a text box, each in its author's color. The box's own letters are see-through
+        function paintInk(wrap) {
+            const value = valueAt(text, wrap.paths()[0]) ?? ''; // a text just taken out is drawn once more
+            const key = JSON.stringify(value);
+            if (wrap.inked === key) return;
+            wrap.inked = key;
+            const s = plain(value);
+            const authors = authorsByChar(value);
+            let h = '';
+            for (let i = 0; i < s.length;) {
+                let j = i;
+                while (j < s.length && authors[j] === authors[i]) j++;
+                h += `<span class="${cls(authors[i])}">${esc(s.slice(i, j))}</span>`;
+                i = j;
+            }
+            wrap.mirror.innerHTML = `${h} `; // the space holds a last empty line open, as the box does
+        }
+
+        /* lists: where the page shows a group as a list, texts can be added and taken out */
+        const inList = (key) => [...listed()].some((g) => g === key || g.startsWith(`${key}.`));
+        // a key for a new text in a group, like `like` (p3 → p<next>), and never one the group had since it was opened
+        function freshKey(group, like) {
+            const prefix = /^(.*?)\d+$/.exec(like)?.[1] || 'p';
+            const taken = new Set([text, saved, JSON.parse(original)].flatMap((root) => Object.keys(nodeAt(root, group) ?? {})));
+            let n = 1 + Math.max(0, ...[...taken].map((k) => (k.startsWith(prefix) && /^\d+$/.test(k.slice(prefix.length)) ? +k.slice(prefix.length) : 0)));
+            while (taken.has(`${prefix}${n}`)) n++;
+            return `${prefix}${n}`;
+        }
+        // a text put in a group after the key `after` (or first), the rest in the order they were
+        function insert(group, after, key, value) {
+            const node = nodeAt(text, group) ?? {};
+            const next = after == null ? { [key]: value } : {};
+            Object.entries(node).forEach(([k, v]) => { next[k] = v; if (k === after) next[key] = value; });
+            if (!(key in next)) next[key] = value;
+            set(group, next);
+        }
+        function addText(group, after) {
+            const key = freshKey(group, after ?? textKeys(nodeAt(saved, group))[0] ?? '');
+            withUndo('Added a paragraph', () => insert(group, after, key, ''));
+            show('all', `${group}.${key}`);
+        }
+        const TRASH = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4.5h11M6.2 4.5V2.8h3.6v1.7M4 4.5l.7 8.7h6.6l.7-8.7M6.7 7v4M9.3 7v4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        // a class on the page's elements for a text (`last`: only the last of them), off everything else
+        const FLAGS = ['slop-insert-after', 'slop-remove-hint', 'slop-removing'];
+        function flag(name, path, last) {
+            document.querySelectorAll(`.${name}`).forEach((x) => x.classList.remove(name));
+            if (!path) return;
+            const els = elementsOf(path);
+            (last ? els.slice(-1) : els).forEach((x) => x.classList.add(name));
+        }
+        // the + under a text in a list: pointing at it shows on the page where the new paragraph would go
+        function plusRow(path, group) {
+            const b = el('button', 'sp-insert', '<span class="sp-plus" aria-hidden="true">+</span><span class="sp-insert-label" aria-hidden="true">Add paragraph</span>');
+            b.type = 'button';
+            b.title = 'Add a paragraph below this one';
+            b.setAttribute('aria-label', 'Add a paragraph below this one');
+            const show = (on) => flag('slop-insert-after', on && path, true);
+            ['pointerenter', 'focus'].forEach((t) => b.addEventListener(t, () => show(true)));
+            ['pointerleave', 'blur'].forEach((t) => b.addEventListener(t, () => show(false)));
+            b.addEventListener('click', () => { show(false); addText(group, keysOf(path).at(-1)); });
+            return b;
+        }
+        // Remove: pointing at it outlines the text on the page in red. One with words takes a second click, and stays
+        // red, here and on the page, until then
+        function removeButton(path, wrap) {
+            const drop = el('button', 'sp-trash', TRASH);
+            drop.type = 'button';
+            drop.title = 'Remove this paragraph';
+            drop.setAttribute('aria-label', 'Remove this paragraph');
+            const armed = () => 'armed' in drop.dataset;
+            const hint = (on) => flag('slop-remove-hint', on && path);
+            const arm = (on) => {
+                if (on) drop.dataset.armed = ''; else delete drop.dataset.armed;
+                drop.innerHTML = on ? `${TRASH}Remove?` : TRASH;
+                wrap.classList.toggle('sp-removing', on);
+                flag('slop-removing', on && path);
+            };
+            ['pointerenter', 'focus'].forEach((t) => drop.addEventListener(t, () => hint(true)));
+            ['pointerleave', 'blur'].forEach((t) => drop.addEventListener(t, () => hint(false)));
+            drop.addEventListener('click', () => {
+                if (plain(get(path)).trim() && !armed()) {
+                    arm(true);
+                    setTimeout(() => { if (drop.isConnected && armed()) arm(false); }, 3000);
+                    return;
+                }
+                hint(false);
+                arm(false);
+                withUndo(`Removed "${where(path)}"`, () => remove(path));
+                render();
+            });
+            return drop;
+        }
+        // in the All tab, each list's removed texts until the next save, each with Restore, and a way to start an empty one
+        function listRows(key, box) {
+            [...listed()].filter((g) => g === key || g.startsWith(`${key}.`)).forEach((group) => {
+                const now = textKeys(nodeAt(text, group));
+                const was = textKeys(nodeAt(saved, group));
+                const fieldOf = (k) => [...box.querySelectorAll(':scope > .sp-field')].find((f) => f.dataset.path === `${group}.${k}`);
+                was.forEach((k, i) => {
+                    if (now.includes(k)) return;
+                    const before = was.slice(0, i).reverse().find((x) => now.includes(x)); // the nearest earlier one that's still there
+                    const name = /^p\d+$/.test(k) ? `Paragraph ${i + 1}` : human(k);
+                    const row = el('p', 'sp-gone', `${esc(name)} removed · `);
+                    const b = el('button', 'sp-link', 'Restore');
+                    b.type = 'button';
+                    b.addEventListener('click', () => {
+                        withUndo(`Restored "${name}"`, () => insert(group, before ?? null, k, JSON.parse(JSON.stringify(nodeAt(saved, `${group}.${k}`)))));
+                        render();
+                    });
+                    row.append(b);
+                    let at = before ? fieldOf(before) : null;
+                    while (at?.nextElementSibling?.classList.contains('sp-gone')) at = at.nextElementSibling;
+                    const first = now.length ? fieldOf(now[0]) : null;
+                    if (at) at.after(row); else if (first) first.before(row); else box.append(row);
+                });
+                if (now.length) return;
+                const start = el('button', 'sp-cat-add sp-start', '+ Paragraph');
+                start.type = 'button';
+                start.title = `Start "${where(group)}" again`;
+                start.addEventListener('click', () => addText(group, null));
+                box.append(start);
+            });
+        }
+
         function render() {
+            FLAGS.forEach((name) => flag(name)); // the elements pointed at may be gone
             controls = [controls.find((c) => c.el === pageControl)];
             sets = repeats(entries());
             groupKeys().forEach((k) => { if (!state.known.has(k)) { state.known.add(k); state.open.add(k); } });
@@ -877,7 +1150,7 @@ const Slop = (() => {
                 let shown = 0;
                 groupKeys().forEach((key) => {
                     const paths = (isText(text[key]) ? [key] : entries(text[key], [key]).map(([p]) => p)).filter(keep);
-                    if (!paths.length) return;
+                    if (!paths.length && !(tab === 'all' && inList(key))) return; // an emptied list stays, to start again
                     shown += paths.length;
                     body.append(isText(text[key]) ? field(key) : groupView(key, paths));
                 });
@@ -916,15 +1189,9 @@ const Slop = (() => {
                 if (b.dataset.tab === 'hidden') b.hidden = !hidden.size && state.tab !== 'hidden'; // only on pages that have some
             });
             body.querySelectorAll('.sp-field').forEach((f) => {
+                paintInk(f);
                 f.revert.hidden = !f.paths().some((p) => differs(p) && savedAt(p) !== undefined);
-                const tag = f.querySelector('.sp-unseen');
-                const shown = revealed && f.paths().includes(revealed.path);
-                tag.hidden = !shown && f.paths().some(onPage);
-                tag.disabled = shown || !revealerOf(f.paths()[0]);
-                tag.textContent = shown ? 'shown while editing' : tag.disabled ? 'not on the page' : 'not on the page · show it';
-                tag.title = shown ? 'The page normally hides this. It\'s shown while you edit it'
-                    : tag.disabled ? 'Not on the page right now: the page shows it only some of the time, or not at all. A page can say how to show it with Slop.reveal'
-                        : 'Show the page the way it looks with this text';
+                paintSeen(f);
                 const kind = f.paths().map((p) => hidden.get(p)).find(Boolean);
                 f.kind.hidden = !kind;
                 f.kind.textContent = KINDS[kind] ?? kind ?? '';
@@ -946,6 +1213,18 @@ const Slop = (() => {
             paintMeters();
         }
         repaint = () => { if (!aside.hidden) render(); };
+        reseen = () => { if (!aside.hidden) body.querySelectorAll('.sp-field').forEach(paintSeen); };
+        // a text the page doesn't show right now is tagged, with a way to show it if the page says how
+        function paintSeen(f) {
+            const tag = f.querySelector('.sp-unseen');
+            const shown = revealed && f.paths().includes(revealed.path);
+            tag.hidden = !shown && f.paths().some(onPage);
+            tag.disabled = shown || !revealerOf(f.paths()[0]);
+            tag.textContent = shown ? 'shown while editing' : tag.disabled ? 'not on the page' : 'not on the page · show it';
+            tag.title = shown ? 'The page normally hides this. It\'s shown while you edit it'
+                : tag.disabled ? 'Not on the page right now: the page shows it only some of the time, or not at all. A page can say how to show it with Slop.reveal'
+                    : 'Show the page the way it looks with this text';
+        }
 
         // the page and the editor point at each other
         function mark(on, paths = state.focus?.paths ?? [], scroll = false, tries = 0) {
@@ -1024,12 +1303,12 @@ const Slop = (() => {
             past.set(p, list.slice(-200));
         }
         const recall = (p, words) => past.get(p)?.findLast((v) => plain(v) === words);
-        function edit(paths, input, restoring) {
+        function edit(paths, input, restoring, at) {
             undo = null;
             const f = state.focus;
             [...paths, ...(f?.linked ?? [])].forEach((p) => {
                 remember(p);
-                set(p, applyEdit(get(p), input.value, restoring ? recall(p, input.value) : undefined));
+                set(p, applyEdit(get(p), input.value, restoring ? recall(p, input.value) : undefined, at));
                 remember(p);
             });
             grow(input);
@@ -1086,6 +1365,7 @@ const Slop = (() => {
                 store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, text: JSON.parse(body) }));
                 saved = JSON.parse(body);
                 undo = null;
+                keepDraft();
                 savedStatus();
                 numbers();
                 return;
@@ -1100,6 +1380,7 @@ const Slop = (() => {
                 text.version = Number(out);
                 saved = { ...JSON.parse(body), version: text.version };
                 undo = null;
+                keepDraft();
                 savedStatus();
             } catch (e) {
                 status(`Couldn't save: ${e.message}`, 'error');
@@ -1112,10 +1393,12 @@ const Slop = (() => {
         function touched() {
             numbers();
             changed();
+            keepDraft();
             if (!stale && !undo) status(unsaved() ? 'Not saved yet' : 'No changes since the last save', unsaved() ? 'dirty' : '');
         }
         function reset() {
             store.drop(LOCAL);
+            session.drop(DRAFT);
             text = JSON.parse(original);
             saved = JSON.parse(original);
             undo = null;
@@ -1124,7 +1407,14 @@ const Slop = (() => {
             render();
             savedStatus();
         }
-        addEventListener('beforeunload', (e) => { if (busy || unsaved()) e.preventDefault(); });
+        addEventListener('beforeunload', (e) => { if (busy || unsaved()) { e.preventDefault(); e.returnValue = ''; } });
+        // a reload keeps what isn't saved, in this tab, still unsaved: a page in a frame (or a browser that skips the
+        // prompt) can't ask before it goes. Kept only while the page's version is the one it was based on
+        const DRAFT = `slop-draft:${location.pathname}`;
+        const keepDraft = () => {
+            if (unsaved() && !stale) session.set(DRAFT, JSON.stringify({ base: saved.version, text }));
+            else session.drop(DRAFT);
+        };
         addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 's' && !aside.hidden) { e.preventDefault(); save(); }
             // ⌘Z outside a text undoes the last switch or mark (a text's own ⌘Z undoes its typing)
@@ -1142,11 +1432,11 @@ const Slop = (() => {
         // while the editor is open, a click on a text opens it in the editor
         document.addEventListener('click', (e) => {
             if (aside.hidden || aside.contains(e.target) || btn.contains(e.target)) return;
-            const target = e.target.closest('[data-slop], [data-slop-ref], [data-slop-attr]');
+            const target = e.target.closest('[data-slop], [data-slop-ref], [data-slop-more], [data-slop-attr]');
             if (!target) return;
             e.preventDefault();
             e.stopPropagation();
-            const path = target.dataset.slop || target.dataset.slopRef || attrsOf(target)[0]?.[1];
+            const path = pathOf(target);
             if (!path) return;
             const s = setOf(path);
             if (state.tab === 'repeats' && s) show('repeats', s.paths[0]);
@@ -1241,6 +1531,19 @@ const Slop = (() => {
         }));
         aside.querySelectorAll('.sp-tabs button').forEach((b) => b.addEventListener('click', () => { state.tab = b.dataset.tab; render(); }));
         savedStatus();
+        try {
+            const draft = JSON.parse(session.get(DRAFT));
+            if (draft?.base === saved.version && JSON.stringify(draft.text) !== JSON.stringify(text)) {
+                text = draft.text;
+                applyColors();
+                changed();
+                open(true);
+                status('Unsaved changes from before the reload', 'dirty', {
+                    label: 'Discard',
+                    run: () => { text = JSON.parse(JSON.stringify(saved)); session.drop(DRAFT); applyColors(); changed(); render(); savedStatus(); },
+                });
+            }
+        } catch { /* none */ }
         return { render: () => { if (!aside.hidden) render(); }, touched, open };
     }
 
@@ -1285,5 +1588,5 @@ const Slop = (() => {
         fetch('/__slop').then((res) => (res.ok ? res.text() : '')).then((s) => { if (s === 'slop-editor') ed = editor('file'); else local(); }).catch(local);
     }
 
-    return { ...core, get, set, remove, entries, categories, html, words, fill, refresh, onChange, reveal, meter, start, get text() { return text; } };
+    return { ...core, get, set, remove, entries, categories, html, words, paragraphs, fill, refresh, onChange, reveal, meter, start, get text() { return text; } };
 })();
