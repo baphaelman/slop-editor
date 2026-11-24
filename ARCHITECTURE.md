@@ -49,6 +49,8 @@ For contributors and their agents. [README.md](README.md) is the reference for p
 - **A piece object's first key is its author.** Other keys are ignored. An author missing from `_categories` still works: it's labeled with its id and colored from the palette.
 - **Authorship is per character.** Every operation turns the value into one author per character (`authorsByChar`), works on that, and rebuilds the pieces with `fromChars`. That merges neighbours by the same author and returns a plain string when it's all AI. Hand-written values don't need to be tidy; the editor's output always is.
 - **Markup is parsed over the whole text, not per piece**, so `**` opened in one piece can close in another. Markup characters, spaces and filled-in values don't count toward shares. The markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]`, `{name}`, and `\` to escape.
+- **A blank line** (`\n`, optional spaces, `\n`) splits a text into paragraphs (`paragraphsOf`), each keeping its authors. In a `<p>`, `<li>` or `<dd>`, `fillOne` shows the first and `spill` keeps a copy of the element after it for each of the others, marked `data-slop-more`. Elsewhere `render` turns every `\n` into `<br>`.
+- **A list** is a group the page marks with `data-slop-list` (slop.js draws it: `fillList` copies the first child for each text key, in order, and keeps that first child as its template) or `data-slop-list-ref` (the page draws it). Only there can the editor add and remove texts. New keys come from `freshKey`: the next number after any the group had in the file, the last save or now, so a key is never reused for other words. Order is the object's key order, so a new text is put in by rebuilding the group object (`insert`).
 - **`{name}`** is filled from `Slop.vars`. A string or number is a fact, shown as data. `{html, data}` gives HTML, and it's shown as data only when `data` is true; otherwise it takes the color of whoever wrote the `{name}`.
 - **Repeats** are texts whose words match once whitespace is collapsed (`wordsOf`). A text with fewer than 3 word characters, or made only of data, doesn't count.
 - **Percentages** are rounded one by one, so they can add up to 99 or 101.
@@ -60,12 +62,14 @@ It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- �
 | Section | What's in it |
 |---|---|
 | the format | The pure functions, up to `const core`: `plain`, `applyEdit`, `reattribute`, `unslop`/`reslop`, `assign`, `runs`, `render`, `readable`, `makeup`, `share`, `percent`, `repeats`. Outside a browser, `Slop` is only these. The CLI and `test.mjs` load slop.js with `new Function`. |
-| the block | Parsing the block, `get`/`set`/`entries`, `html`/`words` (which also record that a text is on the page), `fill`, `added` (what a single-page app draws after `start`), `reveal`, `onChange`. |
+| the block | Parsing the block, `get`/`set`/`entries`, `html`/`paragraphs`/`words` (which also record that a text is on the page), `fill` (with `fillOne`, `spill` and `fillList`), `added` (what a single-page app draws after `start`), `reveal`, `onChange`. |
 | categories and their colors | `colorOf`, `categories`, the generated stylesheet, the pies. |
 | colors follow the page | Reads the page's actual background and sets `.slop-dark` on `<html>`. |
 | Slop-o-meter | The readers' switch, pie and legend, and `_show`. A meter with a path measures that group and switches its section: `slop-on`/`slop-off` on the section, which the generated stylesheet reads. |
-| the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
+| the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `paintInk` (the colored words behind each text box), the list's + and Remove (`plusRow`, `removeButton`, which mark the page with `flag`) and removed rows (`listRows`), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
 | the end | `refresh`, `remove`, `start`, and the public object. |
+
+`applyEdit` takes the stretch the edit replaced when the editor knows it (`at`, the selection from `beforeinput`), so a letter typed over a selection that starts with that letter is still mine; when that stretch doesn't fit the change, it compares the two versions. An undo (`was`) also takes back my letters at the edges of the stretch that the earlier version doesn't have as mine.
 
 Read `applyEdit` and `runs` first. Everything else builds on them.
 
@@ -87,7 +91,7 @@ Keep these unless the maintainer changes them.
 2. **The slop switch changes only approval.** Off approves the AI's words (`ai` → `ok`); on takes that back (`ok` → `ai`). It never touches what someone typed, so flipping it can't lose anyone's writing. Approved text has its own color (green).
 3. **Each copy of a repeated text keeps its own authorship.** Approving words in one place shouldn't approve them where nobody read them. In the **All** tab a copy's switch changes that copy only, and says so ("Only this copy changed… Change it too"). In the **Repeats** tab a card's switch and text change every copy, on purpose.
 4. **Readers see nothing unless the page chooses otherwise.** Agents install this on pages whose owners may not want it shown. The other choices are a pie chart, or colors (the pie plus a switch that colors the words). When a page shows colors, the switch starts on unless the reader turned it off. While the editor is open, the author always sees colors.
-5. **Saving is deliberate.** A Save button with a count (and ⌘S), Revert on each changed text, a prompt before leaving with unsaved changes, and no autosave. A save rewrites an HTML file that may be open elsewhere, so each write should be one someone chose, and Revert always has a fixed point to go back to.
+5. **Saving is deliberate.** A Save button with a count (and ⌘S), Revert on each changed text, a prompt before leaving with unsaved changes, and no autosave. A reload keeps unsaved changes in `sessionStorage` for that tab, still unsaved, because a page in a frame can't prompt. A save rewrites an HTML file that may be open elsewhere, so each write should be one someone chose, and Revert always has a fixed point to go back to.
 6. **Undo restores authorship too.** ⌘Z inside a text is the browser's undo, but the restored words get back their earlier authors (`applyEdit`'s `was`). Otherwise undoing a deletion would make the AI's words yours. ⌘Z elsewhere undoes the last switch, mark, revert or category deletion.
 7. **Where words appear isn't who wrote them.** Alt text, tooltips and labels are texts like any other, by whoever wrote them, with a tab of their own (**Hidden**) because colors can't show them. Never a category.
 8. **It's honest, not proven.** The block is the author's account. Don't present anything to readers as verification.
@@ -108,6 +112,9 @@ Keep these unless the maintainer changes them.
 - **Once picked, a category has one color for both themes.** The defaults follow the page's background.
 - **A section switched off sits inside `html.slop-on`.** That's why the generated rules are `:where(.slop-on) .slop-<id>:not(:where(.slop-off) .slop-<id>)` and not a nearest-ancestor rule. `:where` keeps them about as easy to override as the old `html.slop-on .slop-<id>`.
 - **Meters can leave and come back.** A single-page app moves a meter's element or redraws it. `paintMeters` drops meters that aren't in the document, and the MutationObserver in `start` (or `Slop.meter`) takes them back.
+- **A text box's colors are a copy behind it.** The textarea's letters are transparent and `.sp-mirror`, under it, draws the same text in spans by author. The two must wrap identically: they share one CSS rule for font, padding, border and wrapping, so change them together. `numbers()` repaints the copies after every change.
+- **"Not on the page" waits for the page.** A text just added, restored or undone has no element until the next fill (and a single-page app draws later still), so `seenSoon` checks the tags again after each fill and whenever the page adds elements.
+- **A removed text can still be painted once.** `withUndo` repaints (`numbers()`) before the view is redrawn, so anything painting a field reads its value with `valueAt`, not `get`, which would warn about the missing text.
 - **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css`. `index.html` links the files, so it doesn't.
 
 ## Running and testing

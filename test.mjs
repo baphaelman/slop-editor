@@ -15,6 +15,16 @@ test('typing makes the new words mine, the rest keeps its author', () => {
     assert.equal(Slop.applyEdit('same', 'same'), 'same');
 });
 
+test('typing over a selection makes what\'s typed mine, even a letter that matches the one it replaced', () => {
+    assert.deepEqual(Slop.applyEdit('The cat sat.', 'The c sat.', undefined, [4, 7]), ['The ', { me: 'c' }, ' sat.']);
+    assert.deepEqual(Slop.applyEdit('The cat sat.', 'The cat sat.', undefined, [4, 7]), ['The ', { me: 'cat' }, ' sat.']);
+    // a stretch that doesn't fit the edit (a deletion at the caret) falls back to comparing the two versions
+    assert.deepEqual(Slop.applyEdit('abb', 'ab', undefined, [2, 2]), 'ab');
+    assert.deepEqual(Slop.applyEdit('The cat', 'The cart', undefined, [6, 6]), ['The ca', { me: 'r' }, 't']);
+    // and an undo gives the whole word back to the AI
+    assert.equal(Slop.applyEdit(['The ', { me: 'c' }, ' sat.'], 'The cat sat.', 'The cat sat.'), 'The cat sat.');
+});
+
 test('an undo gives the restored words back to whoever wrote them', () => {
     const before = ['The ', { ok: 'cat' }, ' sat.'];
     const typed = Slop.applyEdit(before, 'The dog sat.');
@@ -61,6 +71,13 @@ test('repeated text: the same words in several places, whoever wrote each copy',
         ['a.q', [{ data: 'A quote, twice' }]], ['b.q', [{ data: 'A quote, twice' }]], // data only
     ]);
     assert.deepEqual(sets, [{ words: 'How it works', paths: ['nav.how', 'how.title', 'footer.how'] }]);
+});
+
+test('paragraphs: a blank line splits a text, each part keeping its authors', () => {
+    assert.deepEqual(Slop.paragraphsOf('One line\nand the next'), ['One line\nand the next']);
+    assert.deepEqual(Slop.paragraphsOf(['First. ', { me: 'Mine.\n\nSecond, ' }, 'by the AI.\n  \n\n']), [['First. ', { me: 'Mine.' }], [{ me: 'Second, ' }, 'by the AI.']]);
+    assert.deepEqual(Slop.paragraphsOf(''), ['']);
+    assert.deepEqual(Slop.paragraphsOf('\n\n'), ['\n\n']);
 });
 
 test('markup: links, emphasis, code, values', () => {
@@ -113,15 +130,22 @@ test('react: texts, attributes and meters', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'slop-react-'));
     await mkdir(path.join(dir, 'node_modules/react'), { recursive: true });
     await writeFile(path.join(dir, 'node_modules/react/package.json'), '{"name":"react","type":"module","exports":"./index.js"}');
-    await writeFile(path.join(dir, 'node_modules/react/index.js'), 'export const createElement = (type, props) => ({ type, props }); export const useSyncExternalStore = (s, get) => get();');
+    await writeFile(path.join(dir, 'node_modules/react/index.js'), 'export const Fragment = \'Fragment\'; export const createElement = (type, props, ...children) => (children.length ? { type, props, children } : { type, props }); export const useSyncExternalStore = (s, get) => get();');
     await copyFile(new URL('react.mjs', import.meta.url), path.join(dir, 'react.mjs'));
     const listeners = [];
-    globalThis.Slop = { ...Slop, onChange: (fn) => listeners.push(fn), html: (p, v) => Slop.render('Hi {n}', v), words: (p, v) => Slop.readable('Hi {n}', v) };
+    globalThis.Slop = { ...Slop, onChange: (fn) => listeners.push(fn), html: (p, v) => Slop.render('Hi {n}', v), words: (p, v) => Slop.readable('Hi {n}', v), paragraphs: (p, v) => Slop.paragraphsOf(p === 'a.c' ? 'One\n\nTwo' : 'Hi {n}').map((x) => Slop.render(x, v)) };
     const R = await import(path.join(dir, 'react.mjs'));
     assert.equal(listeners.length, 1);
     assert.deepEqual(R.SlopText({ path: 'a.b', as: 'p', vars: { n: 2 }, id: 'x' }), {
         type: 'p', props: { id: 'x', 'data-slop-ref': 'a.b', dangerouslySetInnerHTML: { __html: '<span class="slop-ai">Hi </span><span class="slop-data">2</span>' } },
     });
+    // a paragraph after a blank line gets an element of its own; the id stays on the first
+    const two = R.SlopText({ path: 'a.c', as: 'p', id: 'y', className: 'k' });
+    assert.equal(two.type, 'Fragment');
+    assert.deepEqual(two.children.map((c) => [c.props.id, c.props.className, c.props['data-slop-ref'], c.props.dangerouslySetInnerHTML.__html]), [
+        ['y', 'k', 'a.c', '<span class="slop-ai">One</span>'], [undefined, 'k', 'a.c', '<span class="slop-ai">Two</span>'],
+    ]);
+    assert.deepEqual(R.slopList('a'), { 'data-slop-list-ref': 'a' });
     assert.deepEqual(R.slopAttrs({ alt: 'a.img', title: 'a.tip' }, { n: 3 }), { alt: 'Hi 3', title: 'Hi 3', 'data-slop-attr': 'alt:a.img title:a.tip', 'data-slop-vars': '{"n":3}' });
     assert.deepEqual(R.SlopMeter({ path: 'a', className: 'big' }).props, { className: 'slop-meter big', 'data-slop-meter': 'a' });
     delete globalThis.Slop;

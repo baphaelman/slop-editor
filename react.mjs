@@ -1,7 +1,7 @@
 // The slop editor in a React app: `import { SlopText, SlopMeter, slopAttrs, useSlop } from 'slop-editor/react'`.
 // slop.js has to be in the page first, as a plain <script>: this hands its global Slop to the modules. No JSX and no
 // build, so it works from node_modules as it is. MIT license.
-import { createElement, useSyncExternalStore } from 'react';
+import { createElement, Fragment, useSyncExternalStore } from 'react';
 
 /* global Slop */
 // slop.js declares Slop with const: a global name, but not a property of window
@@ -24,11 +24,20 @@ const snapshot = () => version;
 export const useSlop = () => useSyncExternalStore(subscribe, snapshot, snapshot);
 
 // a text as HTML, in a span (or `as`). React draws it; data-slop-ref lets the editor find it on the page. `vars` fill
-// in {name}s for this one text
+// in {name}s for this one text. As a p, li or dd, each paragraph after a blank line gets one of its own
 export function SlopText({ path, as = 'span', vars, ...props }) {
     useSlop();
-    return createElement(as, { ...props, 'data-slop-ref': path, dangerouslySetInnerHTML: { __html: slop.html(path, vars) } });
+    const ref = { 'data-slop-ref': path };
+    if (!['p', 'li', 'dd'].includes(as)) return createElement(as, { ...props, ...ref, dangerouslySetInnerHTML: { __html: slop.html(path, vars) } });
+    const parts = slop.paragraphs(path, vars);
+    if (parts.length === 1) return createElement(as, { ...props, ...ref, dangerouslySetInnerHTML: { __html: parts[0] } });
+    const { id, ...rest } = props;
+    return createElement(Fragment, null, ...parts.map((h, i) => createElement(as, { ...(i ? rest : props), ...ref, key: i, dangerouslySetInnerHTML: { __html: h } })));
 }
+
+// a group the page shows as a list (paragraphs it draws one by one): the editor can add and remove texts in it.
+// <div {...slopList('intro')}>{…a <SlopText as="p"> for each…}</div>
+export const slopList = (path) => ({ 'data-slop-list-ref': path });
 
 // attributes from texts, as plain text: <img {...slopAttrs({ alt: 'hero.photo' })} />. The editor lists them under
 // Hidden. Call it from a component that calls useSlop(), so they follow edits

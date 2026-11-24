@@ -61,6 +61,8 @@ A **text** is a plain string (AI) or a list mixing strings (AI), `{"me": "..."}`
 
 Slop is only ever the AI's words. Other categories are other people's. Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
 
+**Paragraphs.** A blank line in a text shown in a `<p>`, `<li>` or `<dd>` starts a paragraph of its own: the element shows the first, and a copy of it after it shows each of the others (`data-slop-more` instead of `data-slop`). Markup doesn't carry across a blank line. Anywhere else a line break is a `<br>`. An element whose text is empty is hidden (`.slop-empty`), except while the editor is open.
+
 In the page:
 
 ```html
@@ -74,7 +76,17 @@ In the page:
 </script>
 ```
 
-Code can render texts itself with `Slop.html('intro.p1')` (HTML) or `Slop.words('intro.p1')` (plain text). Put `data-slop-ref="intro.p1"` on the element that shows them (a button or link the page builds) and the editor can still find, highlight and scroll to it. Unlike `data-slop`, nothing fills it.
+Code can render texts itself with `Slop.html('intro.p1')` (HTML), `Slop.paragraphs('intro.p1')` (HTML, one string per paragraph) or `Slop.words('intro.p1')` (plain text). Put `data-slop-ref="intro.p1"` on the element that shows them (a button or link the page builds) and the editor can still find, highlight and scroll to it. Unlike `data-slop`, nothing fills it.
+
+**Lists.** Where the page shows a group as a list of paragraphs, say so, and the editor can add and remove texts there:
+
+```html
+<div data-slop-list="intro">            <!-- a copy of the first child for each text in "intro", in order -->
+  <p data-slop="intro.p1"></p>
+</div>
+```
+
+The list's children are its texts and nothing else. A page that draws them itself (React and the like) puts `data-slop-list-ref="intro"` on the element around them instead, draws one per key of the group, in order, and redraws after an edit.
 
 **Words the page doesn't show as words** (alt text for an image that doesn't load, a tooltip, a label for screen readers, a placeholder) go in attributes: `<img data-slop-attr="alt:hero.photo">`, or several at once, `data-slop-attr="alt:hero.photo title:hero.tip"`. They're filled as plain text. The editor gives them a tab of their own, **Hidden**, since readers' colors can't show them.
 
@@ -98,11 +110,14 @@ A group's key (`'intro'`) covers all its texts. While shown, the page's own redr
 `slop-editor/react` wraps it, with no JSX and no build. slop.js still goes in the page first, as a plain `<script>`.
 
 ```jsx
-import Slop, { SlopText, SlopMeter, slopAttrs, useSlop } from 'slop-editor/react';
+import Slop, { SlopText, SlopMeter, slopAttrs, slopList, useSlop } from 'slop-editor/react';
 
 <SlopMeter path="games.othello" />            // a meter (no path: the page's)
-<SlopText path="intro.p1" as="p" />           // a text, redrawn after each edit
+<SlopText path="intro.p1" as="p" />           // a text, redrawn after each edit; as a p, li or dd, one per paragraph
 <img src="hero.png" {...slopAttrs({ alt: 'hero.photo' })} />
+<div {...slopList('intro')}>                  // a list: the editor can add and remove texts in it
+  {Object.keys(Slop.text.intro).map((k) => <SlopText key={k} path={`intro.${k}`} as="p" />)}
+</div>
 ```
 
 `useSlop()` makes any component render again after an edit; `SlopText` already does. Call it in a component that uses `slopAttrs` or `Slop.words`.
@@ -112,13 +127,15 @@ import Slop, { SlopText, SlopMeter, slopAttrs, useSlop } from 'slop-editor/react
 `slop-editor edit page.html` serves the page's folder on 127.0.0.1 and opens the page with an **Edit text** button. Published, the page shows no sign of the editor. `Slop.start({edit: 'local'})` gives every visitor an editor that saves in their browser instead (the demo page uses it).
 
 - **All** shows every text, grouped by section. **Slop left** shows only the texts that aren't all yours yet; work through it until it's empty. **Repeats** shows the repeated text. **Hidden** (on pages that have some) shows alt text, tooltips and labels.
-- Each text, section and the whole page has a pie of what it's made of and a **slop** switch. Off approves the AI's words; on takes that back. Your typed words are never touched. Every switch can be undone from the status line.
+- Each text box shows its words in their authors' colors, as readers see them with the Slop-o-meter on.
+- Each text, section and the whole page has a pie of what it's made of, by its name, and a **slop** switch at the right. Off approves the AI's words; on takes that back. Your typed words are never touched. Every switch can be undone from the status line.
 - At the top: how much of the page is slop, and every category with its share and a color picker. Rename a category by editing its name. **+ Category** adds one; × deletes it (its words become AI-generated).
 - Focus a text and a row of categories appears under it: **Mark all as** (or **Mark selection as**, with words selected) gives the text, or just the selection, to a category.
+- In a list, a **+** under the text you're on adds an empty paragraph after it; pointing at the + draws a line on the page where it would go. The trash can before its slop switch outlines the text on the page in dashed red; a text with words takes a second click (it asks **Remove?**), and stays red until then. A removed text stays in **All** as a row with **Restore** until the next save. New texts get new keys (`p7` between `p2` and `p3` is still called Paragraph 3 in the editor), so a key never moves to other words.
 - Click any text on the page to jump to it in the editor. Focus a text in the editor to find it on the page.
 - Drag the header to move the editor anywhere, and drag any edge or corner to resize it. It stays where you leave it; double-click the header to put it back. On a phone it's a sheet along the bottom, and dragging changes its height.
-- Nothing is written until you click **Save** (or press ⌘S). The button counts the texts changed since the last save. Each changed text has a **Revert** link that takes its words and authorship back to the last save. Saves are versioned: a tab whose copy of the file is out of date gets an error instead of overwriting newer edits, and leaving with unsaved changes asks first.
-- ⌘Z in a text undoes typing and gives the restored words back to whoever wrote them. ⌘Z anywhere else undoes the last switch, mark or revert.
+- Nothing is written until you click **Save** (or press ⌘S). The button counts the texts changed since the last save. Each changed text has a **Revert** link that takes its words and authorship back to the last save. Saves are versioned: a tab whose copy of the file is out of date gets an error instead of overwriting newer edits. Leaving with unsaved changes asks first, and a reload keeps them in that tab, still unsaved, with **Discard** (a page in a frame can't ask).
+- What you type is yours, every letter, even one typed over a selection that starts with the same letter. ⌘Z in a text undoes typing and gives the restored words back to whoever wrote them. ⌘Z anywhere else undoes the last switch, mark, revert, added or removed text.
 
 ### Repeated text
 

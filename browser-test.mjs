@@ -18,12 +18,14 @@ const FIXTURE = {
     nav: { how: 'How it works' },
     how: { title: 'How it works', p1: 'The agent wrote this.', p2: ['There are {n} things, ', { me: 'I promise' }, '.'], note: 'Shown only sometimes.', photo: 'A diagram of the agent at work.' },
     deep: { far: 'Far down a panel that scrolls.' },
+    list: { p1: 'First item.', p2: ['Second, ', { me: 'all mine' }, '.'] },
 };
 const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Fixture</title>
 <link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
 <div data-slop-meter></div><nav><a href="#" data-slop="nav.how"></a></nav>
 <h1 data-slop="how.title"></h1><p data-slop="how.p1"></p><p data-slop="how.p2"></p><p id="note"></p>
 <img id="photo" data-slop-attr="alt:how.photo title:how.photo" width="40" height="20" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+<div id="list" data-slop-list="list"><p data-slop="list.p1"></p></div>
 <div id="panel" style="height: 120px; overflow: auto"><div style="height: 900px"></div><button data-slop-ref="deep.far">Far down a panel that scrolls.</button></div>
 <script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
 <script src="slop.js"></script>
@@ -151,6 +153,21 @@ try {
         assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
     });
 
+    await check('typing over a selection is mine, even a letter that matches the first one selected', async () => {
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(4, 9)); // "agent"
+        await p.keyboard.type('a');
+        assert.deepEqual(await get(p, 'how.p1'), ['The ', { me: 'a' }, ' wrote this.']);
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('a text\'s pie sits next to its name, its switch at the end', async () => {
+        assert.ok(await p.$eval(`${field('how.p1')} .sp-flabel label + .sp-pie`, (x) => !!x));
+        assert.ok(await p.$eval(`${field('how.p1')} .sp-fend > .sp-ctl:last-child .sp-toggle`, (x) => !!x));
+    });
+
     await check('marking a selection as a category', async () => {
         const ta = p.locator(`${field('how.p1')} textarea`);
         await ta.click();
@@ -167,6 +184,26 @@ try {
         assert.equal(await p.textContent('.sp-save'), 'Saved');
         await p.reload();
         assert.deepEqual(await get(p, 'nav.how'), [{ ok: 'How it works' }]); // kept by the browser
+    });
+
+    await check('a reload asks first, and keeps the unsaved changes either way', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        const ta = p.locator(`${field('how.title')} textarea`);
+        await ta.click();
+        await ta.press('End');
+        await p.keyboard.type('!');
+        let asked = '';
+        p.once('dialog', (d) => { asked = d.type(); d.accept(); });
+        await p.reload();
+        assert.equal(asked, 'beforeunload');
+        assert.match(await p.textContent('.sp-status'), /Unsaved changes from before the reload/);
+        assert.deepEqual(await get(p, 'how.title'), [{ ok: 'How it works' }, { me: '!' }]);
+        assert.match(await p.textContent('.sp-save'), /^Save 1/);
+        await p.click('.sp-status .sp-link'); // Discard
+        assert.deepEqual(await get(p, 'how.title'), [{ ok: 'How it works' }]);
+        await p.reload();
+        assert.ok(await p.$eval('.slop-panel', (x) => x.hidden)); // nothing kept, so the editor stays closed
     });
 
     await check('a hidden text is shown on the page while it\'s edited', async () => {
@@ -201,6 +238,64 @@ try {
         assert.ok(await p.$eval('[data-slop-ref]', (x) => x.classList.contains('slop-focus')));
         await p.waitForFunction(() => document.getElementById('panel').scrollTop > 500);
     });
+
+    const order = () => p.evaluate(() => Object.keys(Slop.text.list));
+    const shown = () => p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent));
+    await check('a list draws a copy of its first child for each text in its group', async () => {
+        assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.dataset.slop)), ['list.p1', 'list.p2']);
+        assert.deepEqual(await shown(), ['First item.', 'Second, all mine.']);
+    });
+
+    await check('a blank line starts a paragraph of its own on the page', async () => {
+        const ta = p.locator(`${field('list.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(t.value.length, t.value.length));
+        await p.keyboard.insertText('\n\nA second paragraph.');
+        await p.waitForSelector('[data-slop-more="list.p1"]');
+        assert.deepEqual(await shown(), ['First item.', 'A second paragraph.', 'Second, all mine.']);
+        await p.keyboard.press('Meta+z');
+        await p.waitForFunction(() => !document.querySelector('[data-slop-more]'));
+        assert.equal(await get(p, 'list.p1'), 'First item.');
+    });
+
+    await check('each text box shows its words in their authors\' colors', async () => {
+        const spans = await p.$eval(`${field('list.p2')} .sp-mirror`, (m) => [...m.children].map((x) => [x.className, x.textContent, getComputedStyle(x).color]));
+        assert.deepEqual(spans.map(([c, t]) => [c, t]), [['slop-ai', 'Second, '], ['slop-me', 'all mine'], ['slop-ai', '.']]);
+        assert.notEqual(spans[0][2], spans[1][2]);
+        assert.equal(await p.$eval(`${field('list.p2')} textarea`, (t) => getComputedStyle(t).color), 'rgba(0, 0, 0, 0)');
+    });
+
+    await check('in a list, a paragraph can be added below another, taken out, and restored', async () => {
+        await p.hover(`${field('list.p1')} .sp-insert`);
+        assert.equal(await p.$eval('#list > p', (x) => x.classList.contains('slop-insert-after')), true); // where it would go
+        await p.click(`${field('list.p1')} .sp-insert`);
+        assert.deepEqual(await order(), ['p1', 'p3', 'p2']);
+        assert.equal(await p.$$eval('.slop-insert-after', (xs) => xs.length), 0);
+        assert.equal(await p.evaluate(() => document.activeElement.closest('.sp-field')?.dataset.path), 'list.p3');
+        assert.equal(await p.textContent(`${field('list.p3')} label`), 'Paragraph 2');
+        await p.waitForFunction(() => document.querySelector('.sp-field[data-path="list.p3"] .sp-unseen').hidden); // on the page once drawn
+        const shown = (sel) => p.$eval(`${field('list.p3')} ${sel}`, (r) => [...r.children].filter((x) => !x.hidden).map((x) => x.className.split(' ')[0]));
+        assert.deepEqual(await shown('.sp-flabel'), ['', 'sp-pie', 'sp-fend']); // name and pie, then the rest at the end
+        assert.deepEqual((await shown('.sp-fend')).slice(-2), ['sp-trash', 'sp-ctl']); // the trash can, then the switch
+        await p.keyboard.insertText('Added.');
+        assert.deepEqual(await get(p, 'list.p3'), [{ me: 'Added.' }]);
+        await p.waitForFunction(() => document.querySelectorAll('#list > p')[1]?.textContent === 'Added.');
+        const remove = p.locator(`${field('list.p2')} .sp-trash`);
+        await remove.hover();
+        assert.ok(await p.$eval('[data-slop="list.p2"]', (x) => x.classList.contains('slop-remove-hint')));
+        await remove.click();
+        assert.deepEqual(await order(), ['p1', 'p3', 'p2']); // one with words takes a second click, and is red until then
+        assert.ok(await p.$eval('[data-slop="list.p2"]', (x) => x.classList.contains('slop-removing')));
+        assert.equal(await remove.textContent(), 'Remove?');
+        await remove.click();
+        assert.deepEqual(await order(), ['p1', 'p3']);
+        await p.waitForFunction(() => document.querySelectorAll('#list > p').length === 2);
+        assert.match(await p.textContent('.sp-gone'), /Paragraph 2 removed/);
+        await p.click('.sp-gone button');
+        assert.deepEqual(await order(), ['p1', 'p2', 'p3']); // where it was at the last save: after p1
+        assert.deepEqual(await get(p, 'list.p2'), ['Second, ', { me: 'all mine' }, '.']);
+        await p.waitForFunction(() => document.querySelectorAll('#list > p').length === 3);
+    });
     await p.close();
 
     // ---------- the file editor, under `slop-editor edit` ----------
@@ -229,6 +324,18 @@ try {
             await stale.click('.sp-save');
             await stale.waitForFunction(() => /Couldn't save/.test(document.querySelector('.sp-status').textContent));
             assert.equal((await block(file)).version, 2);
+        });
+
+        await check('a paragraph added in a list is saved in its place, and drawn from the file', async () => {
+            await p.click(`${field('list.p1')} .sp-insert`);
+            await p.keyboard.insertText('Saved in the middle.');
+            await p.keyboard.press('Meta+s');
+            await p.waitForFunction(() => document.querySelector('.sp-save').textContent === 'Saved');
+            const saved = await block(file);
+            assert.deepEqual(Object.keys(saved.list), ['p1', 'p3', 'p2']);
+            assert.deepEqual(saved.list.p3, [{ me: 'Saved in the middle.' }]);
+            await p.reload();
+            assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent)), ['First item.', 'Saved in the middle.', 'Second, all mine.']);
         });
     } finally {
         server.kill();
