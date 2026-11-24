@@ -136,6 +136,11 @@ test('edit: a page that inlines old code gets the current code; one that links i
         assert.match(js.headers.get('content-type'), /javascript/);
         assert.equal((await fetch(new URL('/slop/slop.css', link))).status, 200);
         assert.equal((await fetch(new URL('/slop/other.js', link))).status, 404);
+        // only the page being edited gets the editor: another page in its folder would save into this one
+        const hello = (from) => fetch(new URL('/__slop', link), { headers: { referer: new URL(from, link).href } }).then((r) => r.text());
+        assert.equal(await hello('/page.html'), 'slop-editor');
+        assert.equal(await hello('/linked.html'), 'another page');
+        assert.equal((await fetch(new URL('/__slop', link), { method: 'POST', body: '{"version":1}', headers: { referer: new URL('/linked.html', link).href } })).status, 403);
     } finally {
         server.kill();
     }

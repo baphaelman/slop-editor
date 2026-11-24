@@ -176,6 +176,10 @@ async function edit(file, { port, fixed, open }) {
             res.end(body);
         };
         if (url.pathname === '/__slop') {
+            // only the page being edited: another page in its folder would save its own block into this file
+            let from = '/';
+            try { from = decodeURIComponent(new URL(req.headers.referer).pathname); } catch { /* no referer: curl, say */ }
+            if (from !== '/' && from !== `/${name}`) return req.method === 'POST' ? send(403, `this server edits ${name}`) : send(200, 'another page');
             if (req.method !== 'POST') return send(200, 'slop-editor');
             let body = '';
             req.on('data', (chunk) => { body += chunk; });
