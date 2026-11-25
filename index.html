@@ -85,6 +85,7 @@
       <a href="#repeats" data-slop="nav.repeats"></a>
       <a href="#try" data-slop="nav.try"></a>
       <a href="#install" data-slop="nav.install"></a>
+      <a href="#react" data-slop="nav.react"></a>
     </nav>
   </div>
 </header>
@@ -153,6 +154,17 @@ npx slop-editor edit page.html</pre>
     <p data-slop="install.p4"></p>
     <p data-slop="install.p5"></p>
   </section>
+
+  <section id="react">
+    <h2 data-slop="react.title"></h2>
+    <p data-slop="react.p1"></p>
+<pre><span class="c"># the AI's words (the default)</span>
+npx slop-editor install --auto src
+<span class="c"># words you wrote yourself</span>
+npx slop-editor install --auto --author me src</pre>
+    <p data-slop="react.p2"></p>
+    <p data-slop="react.p3"></p>
+  </section>
 </main>
 
 <footer>
@@ -164,7 +176,7 @@ npx slop-editor edit page.html</pre>
 
 <script type="application/json" id="slop-text">
 {
-  "version": 53,
+  "version": 54,
   "nav": {
     "how": [
       {
@@ -185,7 +197,8 @@ npx slop-editor edit page.html</pre>
       {
         "ok": "Install"
       }
-    ]
+    ],
+    "react": "React"
   },
   "hero": {
     "eyebrow": [
@@ -489,6 +502,12 @@ npx slop-editor edit page.html</pre>
         "me": ", like in this page."
       }
     ]
+  },
+  "react": {
+    "title": "In a React app",
+    "p1": "On Vite, one command moves each component's text into the block and swaps it for `<SlopText>`:",
+    "p2": "It adds the `slopEditor()` plugin and `Slop.start()` too, and lists by line what it couldn't carry. The moved text is AI text unless you say it's yours with `--author me`.",
+    "p3": "Then run your dev server. The page gets an **Edit text** button, and saves go into `src/slopText.json`. A build has no editor."
   },
   "footer": {
     "tagline": [

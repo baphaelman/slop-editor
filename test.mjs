@@ -6,6 +6,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { markup } from './markup.mjs';
+import { moveJsx } from './jsx.mjs';
+import slopEditor from './vite.mjs';
 
 const Slop = new Function(`${await readFile(new URL('slop.js', import.meta.url), 'utf8')}\nreturn Slop;`)();
 
@@ -230,4 +232,116 @@ test('react: texts, attributes and meters', async () => {
     assert.deepEqual(R.slopAttrs({ alt: 'a.img', title: 'a.tip' }, { n: 3 }), { alt: 'Hi 3', title: 'Hi 3', 'data-slop-attr': 'alt:a.img title:a.tip', 'data-slop-vars': '{"n":3}' });
     assert.deepEqual(R.SlopMeter({ path: 'a', className: 'big' }).props, { className: 'slop-meter big', 'data-slop-meter': 'a' });
     delete globalThis.Slop;
+});
+
+test('install --auto --author: the moved text is the AI\'s unless the user says it\'s theirs', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-author-'));
+    const cli = (...a) => execFileSync(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'install', ...a], { cwd: dir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const blockOf = async (name) => JSON.parse(/id="slop-text">([\s\S]*?)<\/script>/.exec(await readFile(path.join(dir, name), 'utf8'))[1]);
+    for (const name of ['ai.html', 'default.html', 'me.html']) await writeFile(path.join(dir, name), '<body><h1>Big News</h1><p>Hello there, this is a paragraph.</p></body>');
+    cli('--auto', 'default.html');
+    cli('--auto', '--author', 'ai', 'ai.html');
+    assert.match(cli('--auto', '--author', 'me', 'me.html'), /moved 2 texts into the block as yours/);
+    assert.equal((await blockOf('default.html'))['big-news'].p1, 'Hello there, this is a paragraph.');
+    assert.deepEqual(await blockOf('ai.html'), await blockOf('default.html'));
+    assert.deepEqual((await blockOf('me.html'))['big-news'], { title: [{ me: 'Big News' }], p1: [{ me: 'Hello there, this is a paragraph.' }] });
+    assert.throws(() => cli('--auto', '--author', 'someone', 'me.html'), /--author takes ai/);
+    assert.throws(() => cli('--author', 'me', 'me.html'), /goes with --auto/);
+});
+
+test('jsx: prose moves into the block as SlopText, with its markup, alt text and imports', () => {
+    const src = `'use client';
+import React from 'react';
+import ExternalLink from './ExternalLink.jsx';
+import { Other, Unused } from './x.js';
+
+export default function Card({ n }) {
+    const x = 1;
+    return (
+        <div>
+            <h2 className="t">Big News</h2>
+            <p>Hello <b>there</b>, see <ExternalLink href="https://a.b">the docs</ExternalLink> &amp; [more] now{" "}ok.</p>
+            <p>Short one</p>
+            <p>Count is {n} things</p>
+            <p>A * B * C and 2 &gt; 1 are in it</p>
+            <img src="a.png" alt="A diagram of it" title="Tip here" />
+            <ul><li>First item is here</li></ul>
+            <i>Some words loose in an italic</i>
+            <Other />
+        </div>
+    );
+}
+`;
+    const r = moveJsx(src, { name: 'card' });
+    assert.deepEqual(r.block, {
+        'big-news': { title: 'Big News', p1: 'Hello **there**, see [the docs](https://a.b) & \\[more\\] now ok.', p2: 'A \\* B \\* C and 2 > 1 are in it', li3: 'First item is here' },
+        'alt-text': { 'a-diagram': 'A diagram of it' },
+        tooltips: { 'tip-here': 'Tip here' },
+    });
+    assert.deepEqual([r.texts, r.attrs, r.skipped, r.loose], [4, 2, [13], [17]]);
+    assert.equal(Slop.readable(r.block['big-news'].p2), 'A * B * C and 2 > 1 are in it');
+    // the source changes only where it moved words: the 'use client' stays first, the unused link import goes, the hook is first in the component
+    assert.ok(r.code.startsWith("'use client';\nimport React from 'react';\nimport { Other, Unused } from './x.js';\nimport { SlopText, slopAttrs, useSlop } from 'slop-editor/react';\n"));
+    assert.ok(r.code.includes('export default function Card({ n }) {\n    useSlop();\n    const x = 1;'));
+    assert.ok(r.code.includes('<SlopText path="card.big-news.title" as="h2" className="t" />'));
+    assert.ok(r.code.includes('<img src="a.png" {...slopAttrs({ alt: \'card.alt-text.a-diagram\', title: \'card.tooltips.tip-here\' })} />'));
+    assert.ok(r.code.includes('<p>Short one</p>') && r.code.includes('<p>Count is {n} things</p>') && r.code.includes('<i>Some words loose in an italic</i>'));
+    // a second run finds nothing more, and a key it has used is never used again
+    assert.equal(moveJsx(r.code, { name: 'card' }).texts, 0);
+    const more = moveJsx('export const A = () => <div><p>One more paragraph here</p></div>;', { name: 'card', have: r.block });
+    assert.deepEqual(more.block, { intro: { p1: 'One more paragraph here' } });
+    // an import it already has gets the names added, not a second one
+    const had = moveJsx("import Slop, { SlopMeter } from 'slop-editor/react';\nexport const A = () => <div><p>One more paragraph here</p></div>;", { name: 'a' });
+    assert.ok(had.code.startsWith("import Slop, { SlopMeter, SlopText } from 'slop-editor/react';"));
+});
+
+test('install --auto on a Vite app: the words file, the plugin, the entry, and --author', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-vite-'));
+    await mkdir(path.join(dir, 'src'));
+    await writeFile(path.join(dir, 'package.json'), '{"name":"app","dependencies":{"slop-editor":"*"}}');
+    await writeFile(path.join(dir, 'index.html'), '<div id="root"></div><script type="module" src="/src/main.jsx"></script>');
+    await writeFile(path.join(dir, 'vite.config.js'), "import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n})\n");
+    await writeFile(path.join(dir, 'src/main.jsx'), "import React from 'react';\nimport App from './App.jsx';\n\nrender(<App />);\n");
+    await writeFile(path.join(dir, 'src/App.jsx'), 'export default function App() {\n    return <p>Words that the user wrote, once.</p>;\n}\n');
+    const cli = (...a) => execFileSync(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'install', ...a], { cwd: dir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const same = async () => [await readFile(path.join(dir, 'src/App.jsx'), 'utf8'), await readFile(path.join(dir, 'vite.config.js'), 'utf8')].join();
+    const before = await same();
+    assert.match(cli('--auto', '--dry-run', 'src'), /would move 1 text/);
+    assert.equal(await same(), before); // a dry run changes nothing
+    assert.throws(() => cli('--author', 'me', 'src'), /goes with --auto/);
+    assert.match(cli('--auto', '--author', 'me', 'src'), /Put 1 texts in src\/slopText\.json as yours/);
+    assert.deepEqual(JSON.parse(await readFile(path.join(dir, 'src/slopText.json'), 'utf8')), { version: 1, app: { intro: { p1: [{ me: 'Words that the user wrote, once.' }] } } });
+    assert.match(await readFile(path.join(dir, 'vite.config.js'), 'utf8'), /import slopEditor from 'slop-editor\/vite';[\s\S]*plugins: \[slopEditor\(\), react\(\)\]/);
+    assert.match(await readFile(path.join(dir, 'src/main.jsx'), 'utf8'), /import Slop from 'slop-editor\/react';\n\nSlop\.start\(\);\n/);
+    assert.match(await readFile(path.join(dir, 'src/App.jsx'), 'utf8'), /<SlopText path="app\.intro\.p1" as="p" \/>/);
+    // again: nothing moves, nothing is added twice, and the version only goes up when the file changed
+    cli('--auto', 'src');
+    assert.equal((await readFile(path.join(dir, 'vite.config.js'), 'utf8')).match(/slopEditor/g).length, 2);
+    assert.equal(JSON.parse(await readFile(path.join(dir, 'src/slopText.json'), 'utf8')).version, 1);
+});
+
+test('slop-editor/vite: the block and the code go in the page, and the editor saves into the file, version-checked', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-plugin-'));
+    await mkdir(path.join(dir, 'src'));
+    const file = path.join(dir, 'src/slopText.json');
+    await writeFile(file, JSON.stringify({ version: 4, a: { b: 'Hi </script>' } }));
+    const plugin = slopEditor();
+    plugin.configResolved({ root: dir });
+    const tags = await plugin.transformIndexHtml();
+    const block = tags.find((t) => t.attrs?.id === 'slop-text');
+    assert.deepEqual(JSON.parse(block.children.replace(/\\u003c/g, '<')), { version: 4, a: { b: 'Hi </script>' } });
+    assert.ok(!block.children.includes('</script>') && tags.some((t) => t.tag === 'style') && tags.some((t) => t.tag === 'script' && t.children.includes('const Slop')));
+    let handler;
+    plugin.configureServer({ watcher: { add() {}, on() {} }, middlewares: { use: (at, fn) => { handler = fn; } }, ws: { send() {} } });
+    const call = (method, body) => new Promise((resolve) => {
+        const req = { method, on: (e, fn) => { if (e === 'data' && body) fn(body); if (e === 'end') setTimeout(fn, 0); } };
+        const res = { statusCode: 200, end: (out) => resolve([res.statusCode, out]) };
+        handler(req, res);
+    });
+    assert.deepEqual(await call('GET'), [200, 'slop-editor']);
+    assert.deepEqual(await call('POST', JSON.stringify({ version: 4, a: { b: 'Edited' } })), [200, '5']);
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { version: 5, a: { b: 'Edited' } });
+    assert.equal((await call('POST', JSON.stringify({ version: 4, a: { b: 'Stale' } })))[0], 409); // a page that loaded version 4
+    assert.equal((await call('POST', 'not json'))[0], 400);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).a.b, 'Edited');
 });

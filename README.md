@@ -6,7 +6,7 @@ Every text starts as AI-generated: slop. What you type becomes yours. Switch a t
 
 It's honest, not proven. The record is the author's own account, like a byline: nothing can tell AI text someone retyped from words they wrote. What the slop editor makes easy is telling the truth about it, and `slop-editor history` shows the account commit by commit.
 
-It's two files (`slop.js` and `slop.css`), has no dependencies and no build step, and works in any HTML page.
+It's two files (`slop.js` and `slop.css`) with no dependencies and no build step in the page, and works in any HTML page.
 
 **[Try it on the demo page](https://baphaelman.github.io/slop-editor/)**, which is itself tracked by the slop editor.
 
@@ -26,6 +26,8 @@ The agent moves the page's words into the text block for you. That's the tedious
 ```sh
 npx slop-editor install page.html  # inline slop.css and slop.js, add the text block
 npx slop-editor install --auto page.html  # the same, and move the page's paragraphs, headings and list items into the block
+npx slop-editor install --auto --author me page.html  # the same, with the moved text marked as yours (the default is the AI's)
+npx slop-editor install --auto src          # a React app on Vite: the plugin, Slop.start(), and each component's text (see below)
 npx slop-editor edit page.html     # open the page with the editor; it saves into the file (and re-inlines the current code)
 npx slop-editor check page.html    # how much is yours, repeated text, texts the block lacks
 npx slop-editor history page.html  # what each git commit did to who wrote what (a page, or a block kept as .json)
@@ -118,7 +120,25 @@ A group's key (`'intro'`) covers all its texts. While shown, the page's own redr
 
 ### In a React app
 
-`slop-editor/react` wraps it, with no JSX and no build. slop.js still goes in the page first, as a plain `<script>`.
+**On Vite, one command does it** (`npm i slop-editor` first):
+
+```sh
+npx slop-editor install --auto src/components/Article.jsx   # a file, or a folder of .jsx and .tsx files
+npx slop-editor install --auto --dry-run src                # what it would do, without doing it
+```
+
+It reads each file with Babel and edits its source in place, so formatting and comments stay. It moves the prose (`p`, `h1`–`h6`, `li`, `dd`, `dt`, `figcaption`, `blockquote` holding plain words, links, bold, italic and code) into `src/slopText.json` (`--text words.json` to put it elsewhere) under the file's name (`ArticleOne.jsx` is `articleOne`), and swaps each text for `<SlopText path="…" />`. A link component (`<ExternalLink href="https://…">`) becomes `[label](url)`, and `alt`, `title`, `placeholder` and `aria-label` become `slopAttrs`, with `useSlop()` added to the component. Imports it leaves unused are dropped. It also adds the `slopEditor()` plugin to `vite.config` and `Slop.start()` to the file `index.html` loads, unless they're there. What it can't carry (words with a `<span>` or `<br>` in them, text built from variables, words in an element that isn't prose) it lists by line, for you or an agent to do by hand. As with a page, the moved text is AI text unless you say `--author me`. Running it again moves nothing twice.
+
+The plugin, `slop-editor/vite`, is what runs the editor:
+
+```js
+import slopEditor from 'slop-editor/vite';
+export default defineConfig({ plugins: [react(), slopEditor()] });  // slopEditor({ text: 'content/words.json' }) to move the file
+```
+
+It puts the words in the page as its text block, with `slop.js` and `slop.css`. Under `vite` the page gets an **Edit text** button, and saves go into the words file, version-checked: the file changes under an open page and the page reloads. A build has no editor. Other build tools aren't set up for you yet: put the block, `slop.js` and `slop.css` in the page yourself.
+
+By hand, `slop-editor/react` wraps it, with no JSX and no build. slop.js still goes in the page first, as a plain `<script>`.
 
 ```jsx
 import Slop, { SlopText, SlopMeter, slopAttrs, slopList, useSlop } from 'slop-editor/react';

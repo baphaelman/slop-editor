@@ -16,7 +16,8 @@
     "./slop.js": "./slop.js",
     "./slop.css": "./slop.css",
     "./react": "./react.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./vite": "./vite.mjs"
   },
   "files": [
     "cli.mjs",
@@ -24,6 +25,8 @@
     "react.mjs",
     "slop.js",
     "slop.css",
+    "jsx.mjs",
+    "vite.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -53,5 +56,8 @@
   },
   "devDependencies": {
     "playwright-core": "^1.65.1"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.15"
   }
 }
