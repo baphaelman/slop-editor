@@ -868,27 +868,25 @@ const Slop = (() => {
         // can say whose words it means and ask an agent to find them (about, find); what an agent marked waits for
         // Keep or Undo (found.before)
         function renderCats() {
+            closePicker();
             const box = $('.sp-cats');
             box.innerHTML = '';
             const counts = makeup(entries().map(([, v]) => v)).counts;
             categories().sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0)).forEach((cat) => {
-                const row = el('span', 'sp-cat', `<label class="sp-swatch" title="Click to pick a color for ${esc(cat.label)}, or drag onto the page to take one from it"><input type="color" aria-label="Color for ${esc(cat.label)}"></label>`
+                const row = el('span', 'sp-cat', `<button type="button" class="sp-swatch" title="Click to pick a color for ${esc(cat.label)}, or drag onto the page to take one from it" aria-label="Pick a color for ${esc(cat.label)}"></button>`
                     + `<input class="sp-cat-name" aria-label="Category name" spellcheck="false"><b class="sp-cat-pct"></b>`
                     + (cat.builtin ? '' : `<button type="button" class="sp-cat-x" title="Delete ${esc(cat.label)}: its words become AI-generated">×</button>`));
                 row.dataset.id = cat.id;
-                const picker = row.querySelector('input[type="color"]');
                 const dot = row.querySelector('.sp-swatch');
                 const pick = (color) => {
                     setColor(cat.id, color);
-                    picker.value = color;
                     dot.style.background = color;
                     applyColors();
                     touched();
                 };
-                picker.value = hex(swatch(cat));
                 dot.style.background = swatch(cat);
-                picker.addEventListener('input', () => pick(picker.value));
                 dragColor(dot, pick);
+                dot.addEventListener('click', (e) => { if (!e.defaultPrevented) picker(cat.id, dot, pick); });
                 const name = row.querySelector('.sp-cat-name');
                 name.value = cat.label;
                 name.size = Math.max(3, cat.label.length);
@@ -1047,6 +1045,167 @@ const Slop = (() => {
             box.querySelector('.sp-found') ? box.querySelector('.sp-found').before(panel) : box.append(panel);
             if (focus) desc.focus();
         }
+
+        /* the color picker, under a category's dot, laid out like the browser's own: a rectangle of shades, then the
+           eyedropper, the color and a hue bar, then its numbers (RGB, HEX or HSL: the arrows switch). Its eyedropper shows
+           the page magnified beside the pointer, not over it */
+        const rgbOf = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+        const hexOf = (rgb) => `#${rgb.map((v) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, '0')).join('')}`;
+        function toHsv(color) {
+            const [r, g, b] = rgbOf(color).map((v) => v / 255);
+            const max = Math.max(r, g, b);
+            const d = max - Math.min(r, g, b);
+            const h = !d ? 0 : max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+            return { h: (h * 60 + 360) % 360, s: max ? d / max : 0, v: max };
+        }
+        function fromHsv({ h, s, v }) {
+            const f = (n) => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+            return hexOf([f(5), f(3), f(1)].map((x) => x * 255));
+        }
+        function hslOf(color) {
+            const [r, g, b] = rgbOf(color).map((v) => v / 255);
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            const l = (max + min) / 2;
+            const d = max - min;
+            const s = !d ? 0 : d / (1 - Math.abs(2 * l - 1));
+            return [Math.round(toHsv(color).h), Math.round(s * 100), Math.round(l * 100)];
+        }
+        function fromHsl([h, s, l]) {
+            const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+            const f = (n) => { const k = (n + h / 30) % 12; return l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+            return hexOf([f(0), f(8), f(4)].map((x) => x * 255));
+        }
+        const FORMATS = {
+            rgb: { labels: ['R', 'G', 'B'], read: rgbOf, write: hexOf, max: [255, 255, 255] },
+            hex: { labels: ['HEX'], read: (c) => [c], write: ([v]) => (/^#?[0-9a-f]{6}$/i.test(v.trim()) ? `#${v.trim().replace('#', '').toLowerCase()}` : null) },
+            hsl: { labels: ['H', 'S', 'L'], read: hslOf, write: fromHsl, max: [359, 100, 100] },
+        };
+        const DROPPER = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10.4 2.4a1.9 1.9 0 0 1 2.7 2.7l-1.6 1.6.8.8-1.1 1.1-.8-.8-5.2 5.2H3v-2.2l5.2-5.2-.8-.8 1.1-1.1.8.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+        let pickEl = null;
+        let pickFormat = 'rgb';
+        let dropping = false;
+        function closePicker() {
+            pickEl?.remove();
+            pickEl = null;
+        }
+        function picker(id, dot, pick) {
+            const again = pickEl?.dataset.id === id;
+            closePicker();
+            if (again) return; // a second click on the dot closes it
+            const cat = () => categories().find((c) => c.id === id);
+            const p = el('div', 'sp-pick', '<div class="sp-pick-sv" tabindex="0" role="slider" aria-label="Shade: right for more color, down for darker"><i></i></div>'
+                + `<div class="sp-pick-row"><button type="button" class="sp-pick-drop" title="Take a color from the page" aria-label="Take a color from the page">${DROPPER}</button>`
+                + '<b class="sp-pick-now"></b><input type="range" class="sp-pick-hue" min="0" max="359" step="1" aria-label="Hue"></div>'
+                + '<div class="sp-pick-nums"></div>');
+            p.dataset.id = id;
+            pickEl = p;
+            const sv = p.querySelector('.sp-pick-sv');
+            const handle = sv.querySelector('i');
+            const hue = p.querySelector('.sp-pick-hue');
+            const now = p.querySelector('.sp-pick-now');
+            const nums = p.querySelector('.sp-pick-nums');
+            let hsv = toHsv(hex(swatch(cat())));
+            function fields() {
+                const f = FORMATS[pickFormat];
+                nums.innerHTML = f.labels.map((l) => `<label class="sp-pick-num"><input spellcheck="false" aria-label="${l}"><span>${l}</span></label>`).join('')
+                    + '<button type="button" class="sp-pick-swap" title="RGB, HEX or HSL" aria-label="Switch between RGB, HEX and HSL"><svg viewBox="0 0 12 16" width="10" height="14" aria-hidden="true"><path d="M2 6l4-4 4 4M2 10l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
+                const inputs = [...nums.querySelectorAll('input')];
+                inputs.forEach((input) => input.addEventListener('input', () => {
+                    const vals = inputs.map((x) => (f.max ? Number(x.value) : x.value));
+                    if (f.max && vals.some((v, i) => !Number.isFinite(v) || v < 0 || v > f.max[i])) return;
+                    const c = f.write(vals);
+                    if (!c) return;
+                    hsv = toHsv(c);
+                    apply();
+                }));
+                inputs.forEach((input) => input.addEventListener('blur', paint));
+                nums.querySelector('.sp-pick-swap').addEventListener('click', () => {
+                    const order = Object.keys(FORMATS);
+                    pickFormat = order[(order.indexOf(pickFormat) + 1) % order.length];
+                    fields();
+                    paint();
+                });
+            }
+            function paint() {
+                const c = fromHsv(hsv);
+                sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))`;
+                Object.assign(handle.style, { left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: c });
+                hue.value = Math.round(hsv.h);
+                hue.style.setProperty('--hue', `hsl(${hsv.h} 100% 50%)`);
+                now.style.background = c;
+                sv.setAttribute('aria-valuetext', c);
+                const vals = FORMATS[pickFormat].read(c);
+                nums.querySelectorAll('input').forEach((x, i) => { if (document.activeElement !== x) x.value = vals[i]; });
+            }
+            function apply() {
+                pick(fromHsv(hsv));
+                paint();
+            }
+            const at = (e) => {
+                const r = sv.getBoundingClientRect();
+                hsv.s = clamp((e.clientX - r.left) / r.width, 0, 1);
+                hsv.v = 1 - clamp((e.clientY - r.top) / r.height, 0, 1);
+                apply();
+            };
+            sv.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                sv.focus();
+                sv.setPointerCapture(e.pointerId);
+                at(e);
+                const move = (ev) => at(ev);
+                const up = () => { sv.removeEventListener('pointermove', move); sv.removeEventListener('pointerup', up); };
+                sv.addEventListener('pointermove', move);
+                sv.addEventListener('pointerup', up);
+            });
+            sv.addEventListener('keydown', (e) => {
+                const step = e.shiftKey ? 0.1 : 0.02;
+                const d = { ArrowLeft: ['s', -step], ArrowRight: ['s', step], ArrowUp: ['v', step], ArrowDown: ['v', -step] }[e.key];
+                if (!d) return;
+                e.preventDefault();
+                hsv[d[0]] = clamp(hsv[d[0]] + d[1], 0, 1);
+                apply();
+            });
+            hue.addEventListener('input', () => { hsv.h = +hue.value; apply(); });
+            p.querySelector('.sp-pick-drop').addEventListener('click', (e) => eyedrop(e, (c) => { hsv = toHsv(c); apply(); }));
+            p.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dropping) { e.stopPropagation(); closePicker(); dot.focus(); } });
+            aside.append(p);
+            // under the dot, inside the editor
+            const a = aside.getBoundingClientRect();
+            const r = dot.getBoundingClientRect();
+            p.style.top = `${r.bottom - a.top + 8}px`;
+            p.style.left = `${clamp(r.left - a.left - 10, 8, a.width - p.offsetWidth - 8)}px`;
+            fields();
+            paint();
+        }
+        // the eyedropper: the magnifier follows the pointer until a click takes the color under it (Escape: none)
+        function eyedrop(start, done) {
+            dropping = true;
+            const lens = sampler();
+            let color = null;
+            const move = (e) => { color = colorAt(e.clientX, e.clientY); lens.show(e.clientX, e.clientY, color); };
+            move(start);
+            const off = new AbortController();
+            const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+            const finish = (keep) => {
+                off.abort();
+                lens.remove();
+                dropping = false;
+                if (keep && color) done(color);
+                // the click that took it mustn't reach the page (or the next press clears that)
+                const after = new AbortController();
+                addEventListener('click', (e) => { stop(e); after.abort(); }, { capture: true, signal: after.signal });
+                addEventListener('pointerdown', () => after.abort(), { capture: true, signal: after.signal });
+            };
+            addEventListener('pointermove', move, { capture: true, signal: off.signal });
+            addEventListener('pointerdown', (e) => { stop(e); move(e); finish(true); }, { capture: true, signal: off.signal });
+            addEventListener('keydown', (e) => { if (e.key === 'Escape') { stop(e); finish(false); } }, { capture: true, signal: off.signal });
+        }
+        // a press anywhere but the picker or a dot closes it
+        addEventListener('pointerdown', (e) => {
+            if (pickEl && !dropping && !pickEl.contains(e.target) && !e.target.closest?.('.sp-swatch')) closePicker();
+        }, true);
 
         /* drag a category's dot onto the page to take a color from it: the point is a ring, and the color shows in a
            circle beside it, joined by a line, so the pointer never hides it. A click still opens the browser's picker */
@@ -1870,7 +2029,7 @@ const Slop = (() => {
             document.documentElement.classList.toggle('slop-editing', on);
             editing = on;
             paintShow();
-            if (!on) { mark(false); unreveal(); return; }
+            if (!on) { mark(false); unreveal(); closePicker(); return; }
             place();
             render();
         };

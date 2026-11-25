@@ -328,11 +328,41 @@ try {
         assert.ok(chips.length > 2 && descending(chips), String(chips));
     });
 
-    await check('a category\'s color: the browser\'s picker, or drag its dot onto the page; Revert colors', async () => {
+    await check('a category\'s color: its picker and eyedropper, or drag its dot onto the page; Revert colors', async () => {
         const color = () => p.evaluate(() => Slop.text._categories?.ai?.color);
-        await p.locator('.sp-cat[data-id="ai"] input[type="color"]').fill('#2b9fc0');
+        // the picker: a rectangle of shades, the eyedropper, the color and a hue bar, then its numbers
+        await p.click('.sp-cat[data-id="ai"] .sp-swatch');
+        assert.ok(await p.isVisible('.sp-pick'));
+        const sv = await (await p.$('.sp-pick-sv')).boundingBox();
+        await p.mouse.click(sv.x + sv.width - 14, sv.y + 14); // near the top right: the hue, nearly full
+        assert.match(await color(), /^#[0-9a-f]{6}$/);
+        await p.fill('.sp-pick-num input >> nth=0', '43');
+        await p.fill('.sp-pick-num input >> nth=1', '159');
+        await p.fill('.sp-pick-num input >> nth=2', '192');
         assert.equal(await color(), '#2b9fc0');
         assert.equal(await p.$eval('.sp-cat[data-id="ai"] .sp-swatch', (x) => getComputedStyle(x).backgroundColor), 'rgb(43, 159, 192)');
+        await p.click('.sp-pick-swap');
+        assert.equal(await p.inputValue('.sp-pick-num input'), '#2b9fc0'); // HEX
+        await p.fill('.sp-pick-num input', '#336699');
+        assert.equal(await color(), '#336699');
+        await p.click('.sp-pick-swap'); // HSL
+        assert.deepEqual(await p.$$eval('.sp-pick-num span', (xs) => xs.map((x) => x.textContent)), ['H', 'S', 'L']);
+        await p.click('.sp-pick-swap'); // back to RGB
+        // its eyedropper: the magnifier follows the pointer, beside it, until a click takes the color
+        await p.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div id="paint2" style="position:fixed;left:20px;top:500px;width:80px;height:80px;background:#654321"></div>'));
+        await p.click('.sp-pick-drop');
+        await p.mouse.move(60, 540, { steps: 4 });
+        assert.ok(await p.isVisible('.slop-sampler'));
+        const away = await p.$eval('.slop-sampler-lens', (x) => { const r = x.getBoundingClientRect(); return Math.hypot(r.left + r.width / 2 - 60, r.top + r.height / 2 - 540) > r.width / 2; });
+        assert.ok(away, 'the magnifier is beside the pointer');
+        await p.mouse.click(60, 540);
+        assert.equal(await color(), '#654321');
+        assert.equal(await p.$('.slop-sampler'), null);
+        assert.ok(await p.isVisible('.sp-pick')); // still open, showing it
+        assert.deepEqual(await p.$$eval('.sp-pick-num input', (xs) => xs.map((x) => x.value)), ['101', '67', '33']);
+        await p.keyboard.press('Escape');
+        assert.equal(await p.$('.sp-pick'), null);
+        await p.evaluate(() => document.getElementById('paint2').remove());
         // drag the dot onto a color on the page: the ring is at the point, the color in a circle beside it, joined by a line
         await p.evaluate(() => {
             document.body.insertAdjacentHTML('beforeend', '<div id="paint" style="position:fixed;left:20px;top:300px;width:80px;height:80px;background:#123456"></div>'
