@@ -318,6 +318,42 @@ try {
         assert.deepEqual(await p.$$eval('#list > *', (xs) => xs.map((x) => x.dataset.slop ?? x.id)), ['list.title', 'list.p1', 'list.p2', 'list.p3', 'aside']);
         assert.equal(await p.$$eval(`${field('list.title')} .sp-trash, ${field('list.title')} .sp-insert`, (xs) => xs.length), 0);
     });
+
+    await check('the legend and the editor\'s categories list the biggest share first', async () => {
+        const shares = (sel) => p.$$eval(sel, (xs) => xs.map((x) => (/(<?)(\d+)%/.exec(x.textContent) ?? [0, '', '0']).slice(1)).map(([lt, n]) => (lt ? 0.5 : +n)));
+        const descending = (xs) => xs.every((x, i) => !i || xs[i - 1] >= x);
+        const legend = await shares('body > [data-slop-meter] .slop-key');
+        assert.ok(legend.length > 1 && descending(legend), String(legend));
+        const chips = await shares('.sp-cat .sp-cat-pct');
+        assert.ok(chips.length > 2 && descending(chips), String(chips));
+    });
+
+    await check('the color picker: a ring where you pick, its color in a circle beside it, presets, Default, Revert colors', async () => {
+        const color = () => p.evaluate(() => Slop.text._categories?.ai?.color);
+        await p.click('.sp-cat[data-id="ai"] .sp-swatch');
+        assert.ok(await p.isVisible('.sp-picker'));
+        const sv = await p.$('.sp-sv');
+        const box = await sv.boundingBox();
+        await p.mouse.click(box.x + box.width * 0.8, box.y + box.height * 0.6);
+        const picked = await color();
+        assert.match(picked, /^#[0-9a-f]{6}$/);
+        const [ring, loupe] = await p.$$eval('.sp-sv-ring, .sp-sv-loupe', (xs) => xs.map((x) => [x.offsetLeft, x.offsetTop, getComputedStyle(x).backgroundColor]));
+        assert.equal(ring[2], loupe[2]); // the same color, beside the point
+        assert.ok(Math.abs(ring[0] - loupe[0]) > 8 && Math.abs(ring[1] - loupe[1]) > 8);
+        await p.click('.sp-preset[data-color="#2b9fc0"]');
+        assert.equal(await color(), '#2b9fc0');
+        assert.equal(await p.$eval('.sp-cat[data-id="ai"] .sp-swatch', (x) => getComputedStyle(x).backgroundColor), 'rgb(43, 159, 192)');
+        await p.click('.sp-pick-default');
+        assert.equal(await color(), undefined);
+        await p.click('.sp-preset[data-color="#d4469a"]');
+        await p.keyboard.press('Escape');
+        assert.equal(await p.$('.sp-picker'), null);
+        await p.click('.sp-cat-revert');
+        assert.equal(await color(), undefined);
+        assert.ok(await p.$eval('.sp-cat-revert', (x) => x.hidden));
+        await p.click('.sp-status .sp-link'); // Undo
+        assert.equal(await color(), '#d4469a');
+    });
     await p.close();
 
     // ---------- the browser editor after the author publishes a new version ----------

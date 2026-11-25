@@ -670,7 +670,7 @@ const Slop = (() => {
             pie.title = breakdown(m, cats);
             pie.setAttribute('aria-label', pie.title);
             // each category in its own color, with its share of the text
-            legend.innerHTML = cats.filter((c) => m.counts[c.id])
+            legend.innerHTML = cats.filter((c) => m.counts[c.id]).sort((a, b) => m.counts[b.id] - m.counts[a.id])
                 .map((c) => `<span class="slop-key" tabindex="0" data-id="${esc(c.id)}" style="color:${swatch(c)}"><i style="background:${swatch(c)}"></i>${esc(c.label)}<b class="slop-pct">${percent(m.counts[c.id] / m.letters)}</b></span>`).join('');
         });
     }
@@ -862,23 +862,20 @@ const Slop = (() => {
             for (let n = 2; id in BUILTIN || text._categories?.[id] || categories().some((c) => c.id === id); n++) id = `${base}-${n}`;
             return id;
         };
+        // the categories, the one with most of the page first (as the meters' legends)
         function renderCats() {
+            closePicker();
             const box = $('.sp-cats');
             box.innerHTML = '';
-            categories().forEach((cat) => {
-                const row = el('span', 'sp-cat', `<label class="sp-swatch" title="Pick a color for ${esc(cat.label)}"><input type="color"></label>`
+            const counts = makeup(entries().map(([, v]) => v)).counts;
+            categories().sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0)).forEach((cat) => {
+                const row = el('span', 'sp-cat', `<button type="button" class="sp-swatch" title="Pick a color for ${esc(cat.label)}" aria-label="Pick a color for ${esc(cat.label)}"></button>`
                     + `<input class="sp-cat-name" aria-label="Category name" spellcheck="false"><b class="sp-cat-pct"></b>`
                     + (cat.builtin ? '' : `<button type="button" class="sp-cat-x" title="Delete ${esc(cat.label)}: its words become AI-generated">×</button>`));
                 row.dataset.id = cat.id;
-                const picker = row.querySelector('input[type="color"]');
-                picker.value = hex(swatch(cat));
-                row.querySelector('.sp-swatch').style.background = swatch(cat);
-                picker.addEventListener('input', () => {
-                    own(cat.id).color = picker.value;
-                    row.querySelector('.sp-swatch').style.background = picker.value;
-                    applyColors();
-                    touched();
-                });
+                const dot = row.querySelector('.sp-swatch');
+                dot.style.background = swatch(cat);
+                dot.addEventListener('click', () => picker(cat.id, dot));
                 const name = row.querySelector('.sp-cat-name');
                 name.value = cat.label;
                 name.size = Math.max(3, cat.label.length);
@@ -924,7 +921,155 @@ const Slop = (() => {
                 input.addEventListener('blur', () => done(true), { once: true });
             });
             box.append(add);
+            // every picked color back to the default, in one undoable step. Shown while there's one (numbers())
+            const back = el('button', 'sp-cat-add sp-cat-revert', 'Revert colors');
+            back.type = 'button';
+            back.title = 'Every category back to its default color';
+            back.addEventListener('click', () => {
+                withUndo('Colors back to the defaults', () => Object.keys(text._categories).forEach((id) => setColor(id, null)));
+                applyColors();
+                render();
+            });
+            box.append(back);
         }
+
+        /* the color picker, under a category's dot: a square of shades of one hue, where the point you pick is a ring and
+           its color shows in a circle beside it, a hue bar, the default colors, the hex, and Default */
+        const PICK = { w: 232, sv: 132 };
+        function toHsv(color) {
+            const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16) / 255);
+            const max = Math.max(r, g, b);
+            const d = max - Math.min(r, g, b);
+            const h = !d ? 0 : max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+            return { h: (h * 60 + 360) % 360, s: max ? d / max : 0, v: max };
+        }
+        function fromHsv({ h, s, v }) {
+            const f = (n) => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+            return `#${[f(5), f(3), f(1)].map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('')}`;
+        }
+        // a category's own color, or (null) its default
+        function setColor(id, color) {
+            if (color) { own(id).color = color; return; }
+            const c = text._categories?.[id];
+            if (!c) return;
+            delete c.color;
+            if (!Object.keys(c).length) delete text._categories[id];
+            if (!Object.keys(text._categories).length) delete text._categories;
+        }
+        let pickerEl = null;
+        function closePicker() {
+            pickerEl?.remove();
+            pickerEl = null;
+        }
+        function picker(id, dot) {
+            const again = pickerEl?.dataset.id === id;
+            closePicker();
+            if (again) return; // a second click on the dot closes it
+            const p = el('div', 'sp-picker', '<div class="sp-sv" tabindex="0" role="slider" aria-label="Shade: left to right more color, top to bottom darker">'
+                + '<div class="sp-sv-ring"></div><div class="sp-sv-loupe"></div></div>'
+                + '<input type="range" class="sp-hue" min="0" max="359" step="1" aria-label="Hue">'
+                + '<div class="sp-presets"></div>'
+                + '<div class="sp-pick-row"><input class="sp-hex" aria-label="Hex color" spellcheck="false" maxlength="7"><button type="button" class="sp-link sp-pick-default">Default</button></div>');
+            p.dataset.id = id;
+            pickerEl = p;
+            const cat = () => categories().find((c) => c.id === id);
+            const sv = p.querySelector('.sp-sv');
+            const ring = p.querySelector('.sp-sv-ring');
+            const loupe = p.querySelector('.sp-sv-loupe');
+            const hue = p.querySelector('.sp-hue');
+            const hexIn = p.querySelector('.sp-hex');
+            let hsv = toHsv(hex(swatch(cat())));
+            const presets = [...new Set([...['ai', 'ok', 'data'].map((b) => BUILTIN[b][dark ? 'dark' : 'light']), ...PALETTE])];
+            presets.forEach((c) => {
+                const b = el('button', 'sp-preset');
+                b.type = 'button';
+                b.style.background = c;
+                b.dataset.color = c;
+                b.title = c;
+                b.setAttribute('aria-label', c);
+                b.addEventListener('click', () => { hsv = toHsv(c); apply(c); });
+                p.querySelector('.sp-presets').append(b);
+            });
+            function paint(color = fromHsv(hsv)) {
+                sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))`;
+                const x = hsv.s * sv.clientWidth;
+                const y = (1 - hsv.v) * sv.clientHeight;
+                ring.style.left = `${x}px`;
+                ring.style.top = `${y}px`;
+                ring.style.background = color;
+                // the circle sits above and to the right of the point, or wherever there's room
+                const size = loupe.offsetWidth;
+                loupe.style.background = color;
+                loupe.style.left = `${x > sv.clientWidth - size - 16 ? x - size - 10 : x + 10}px`;
+                loupe.style.top = `${y < size + 16 ? y + 10 : y - size - 10}px`;
+                hue.value = Math.round(hsv.h);
+                hue.style.setProperty('--hue', `hsl(${hsv.h} 100% 50%)`);
+                if (document.activeElement !== hexIn) hexIn.value = color;
+                p.querySelectorAll('.sp-preset').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.color === color)));
+                sv.setAttribute('aria-valuetext', color);
+            }
+            function apply(color) {
+                setColor(id, color);
+                dot.style.background = swatch(cat());
+                applyColors();
+                touched();
+                paint(color ?? hex(swatch(cat())));
+            }
+            const at = (e) => {
+                const r = sv.getBoundingClientRect();
+                hsv.s = clamp((e.clientX - r.left) / r.width, 0, 1);
+                hsv.v = 1 - clamp((e.clientY - r.top) / r.height, 0, 1);
+                apply(fromHsv(hsv));
+            };
+            sv.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                sv.focus();
+                sv.setPointerCapture(e.pointerId);
+                sv.classList.add('sp-held');
+                at(e);
+                const move = (ev) => at(ev);
+                const up = () => {
+                    sv.classList.remove('sp-held');
+                    sv.removeEventListener('pointermove', move);
+                    sv.removeEventListener('pointerup', up);
+                    sv.removeEventListener('pointercancel', up);
+                    paint();
+                };
+                sv.addEventListener('pointermove', move);
+                sv.addEventListener('pointerup', up);
+                sv.addEventListener('pointercancel', up);
+            });
+            sv.addEventListener('keydown', (e) => {
+                const step = e.shiftKey ? 0.1 : 0.02;
+                const d = { ArrowLeft: ['s', -step], ArrowRight: ['s', step], ArrowUp: ['v', step], ArrowDown: ['v', -step] }[e.key];
+                if (!d) return;
+                e.preventDefault();
+                hsv[d[0]] = clamp(hsv[d[0]] + d[1], 0, 1);
+                apply(fromHsv(hsv));
+            });
+            hue.addEventListener('input', () => { hsv.h = +hue.value; apply(fromHsv(hsv)); });
+            hexIn.addEventListener('input', () => {
+                const v = hexIn.value.trim();
+                const full = /^#?[0-9a-f]{6}$/i.test(v) ? `#${v.replace('#', '').toLowerCase()}` : null;
+                if (full) { hsv = toHsv(full); apply(full); }
+            });
+            hexIn.addEventListener('blur', () => paint());
+            p.querySelector('.sp-pick-default').addEventListener('click', () => { apply(null); hsv = toHsv(hex(swatch(cat()))); paint(); });
+            p.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closePicker(); dot.focus(); } });
+            aside.append(p);
+            // under the dot, inside the editor
+            const a = aside.getBoundingClientRect();
+            const r = dot.getBoundingClientRect();
+            p.style.top = `${r.bottom - a.top + 8}px`;
+            p.style.left = `${clamp(r.left - a.left - 10, 8, a.width - PICK.w - 8)}px`;
+            paint();
+            sv.focus({ preventScroll: true });
+        }
+        // a click anywhere but the picker or a dot closes it
+        addEventListener('pointerdown', (e) => {
+            if (pickerEl && !pickerEl.contains(e.target) && !e.target.closest?.('.sp-swatch')) closePicker();
+        }, true);
 
         /* marking text: the focused field gets a row of categories. A selection, or the whole text, becomes theirs */
         const assignEl = el('div', 'sp-assign');
@@ -1247,6 +1392,8 @@ const Slop = (() => {
             $('.sp-big b').textContent = percent(page.letters ? (page.counts.ai ?? 0) / page.letters : 0);
             $('.sp-words').textContent = count(page.allWords, 'word');
             aside.querySelectorAll('.sp-seg button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.show === shows())));
+            const revert = $('.sp-cat-revert');
+            if (revert) revert.hidden = !Object.values(text._categories ?? {}).some((c) => c.color);
             aside.querySelectorAll('.sp-cat').forEach((row) => {
                 row.querySelector('.sp-cat-pct').textContent = percent(page.letters ? (page.counts[row.dataset.id] ?? 0) / page.letters : 0);
             });
@@ -1593,7 +1740,7 @@ const Slop = (() => {
             document.documentElement.classList.toggle('slop-editing', on);
             editing = on;
             paintShow();
-            if (!on) { mark(false); unreveal(); return; }
+            if (!on) { mark(false); unreveal(); closePicker(); return; }
             place();
             render();
         };
