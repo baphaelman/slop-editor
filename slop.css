@@ -100,6 +100,8 @@ html.slop-dark {
 .sp-cover-row .sp-pie { width: 22px; height: 22px; }
 .sp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
 .sp-cat { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px 0 4px; border: 1px solid var(--_rule); border-radius: 99px; font-size: 0.78rem; }
+.sp-cat { cursor: pointer; }
+.sp-cat-on { border-color: var(--_accent); box-shadow: 0 0 0 1px var(--_accent); }
 .sp-swatch { position: relative; flex: none; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; cursor: pointer; touch-action: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_ink) 18%, transparent); }
 .sp-swatch:hover { box-shadow: 0 0 0 2px var(--_rule), inset 0 0 0 1px color-mix(in srgb, var(--_ink) 18%, transparent); }
 .sp-swatch input { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); padding: 0; border: 0; opacity: 0; cursor: pointer; }

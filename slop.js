@@ -898,7 +898,9 @@ const Slop = (() => {
                     touched();
                 });
                 name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
-                if (!cat.builtin) name.addEventListener('focus', () => about(cat.id));
+                // selecting a category opens whose words it means, under the categories
+                name.addEventListener('focus', () => about(cat.id));
+                row.addEventListener('click', (e) => { if (!e.target.closest('.sp-swatch, .sp-cat-x, .sp-cat-name')) about(cat.id); });
                 row.querySelector('.sp-cat-x')?.addEventListener('click', () => {
                     withUndo(`Deleted "${cat.label}"`, () => {
                         entries().forEach(([p, v]) => set(p, reattribute(v, cat.id, 'ai')));
@@ -947,7 +949,7 @@ const Slop = (() => {
                 render();
             });
             box.append(back);
-            if (aboutOpen && text._categories?.[aboutOpen]) about(aboutOpen);
+            if (aboutOpen && categories().some((c) => c.id === aboutOpen)) about(aboutOpen);
             // what an agent marked, for the author to keep or undo
             Object.entries(text._categories ?? {}).forEach(([id, c]) => {
                 const before = c.found?.before;
@@ -981,12 +983,22 @@ const Slop = (() => {
 
         /* whose words a category means, and whether an agent should find them: under the categories while open */
         let aboutOpen = null;
+        // an agent can find the words of a category of the page's own, or facts and quotes. Only the author can say which
+        // words are theirs or approved, and slop is whatever's left
+        const findable = (id) => !(id in BUILTIN) || id === 'data';
+        // a category's entry, dropped once it says nothing
+        function tidy(id) {
+            const c = text._categories?.[id];
+            if (c && !Object.keys(c).length) delete text._categories[id];
+            if (text._categories && !Object.keys(text._categories).length) delete text._categories;
+        }
         function about(id, focus) {
             aboutOpen = id;
             const box = $('.sp-cats');
             box.querySelector('.sp-about')?.remove();
-            const c = own(id);
-            const label = () => c.label || id;
+            box.querySelectorAll('.sp-cat').forEach((x) => x.classList.toggle('sp-cat-on', x.dataset.id === id));
+            const c = () => text._categories?.[id] ?? {};
+            const label = () => categories().find((x) => x.id === id)?.label ?? id;
             const panel = el('div', 'sp-about', `<label class="sp-about-q" for="sp-about-${esc(id)}"></label>`
                 + `<textarea id="sp-about-${esc(id)}" rows="2" spellcheck="true" placeholder="Who wrote them, or where they come from"></textarea>`
                 + '<div class="sp-about-row"><label class="sp-check"><input type="checkbox"> Ask an agent to find them</label><button type="button" class="sp-link sp-about-done">Done</button></div>'
@@ -996,34 +1008,41 @@ const Slop = (() => {
             const desc = panel.querySelector('textarea');
             const ask = panel.querySelector('input[type="checkbox"]');
             const note = panel.querySelector('.sp-about-note');
-            desc.value = c.about ?? '';
-            ask.checked = !!c.find;
+            panel.querySelector('.sp-check').hidden = !findable(id);
+            desc.value = c().about ?? '';
+            ask.checked = !!c().find;
             const paint = () => {
                 note.innerHTML = '';
-                if (c.find) {
+                if (c().find) {
                     note.append('Waiting for an agent: it finds them the next time one works on this page, once you save. ');
                     const copy = el('button', 'sp-link', 'Copy a prompt');
                     copy.type = 'button';
                     copy.title = 'To ask an agent now';
                     copy.addEventListener('click', () => {
                         const page = decodeURIComponent(location.pathname.split('/').pop() || '') || 'this page';
-                        const prompt = `In ${page}, find the words that belong to the slop-editor category "${label()}"${c.about ? ` (${c.about})` : ''} and mark them, following the slop-editor skill's "Categories to find".`;
+                        const prompt = `In ${page}, find the words that belong to the slop-editor category "${label()}"${c().about ? ` (${c().about})` : ''} and mark them, following the slop-editor skill's "Categories to find".`;
                         Promise.resolve(navigator.clipboard?.writeText(prompt)).then(() => status('Prompt copied')).catch(() => status("Couldn't copy the prompt", 'error'));
                     });
                     note.append(copy);
-                } else if (c.found?.on) note.append(`Found by an agent · ${day(c.found.on)}`);
+                } else if (c().found?.on) note.append(`Found by an agent · ${day(c().found.on)}`);
                 note.hidden = !note.childNodes.length;
             };
             desc.addEventListener('input', () => {
-                if (desc.value.trim()) c.about = desc.value.trim(); else delete c.about;
+                if (desc.value.trim()) own(id).about = desc.value.trim();
+                else { delete text._categories?.[id]?.about; tidy(id); }
                 touched();
             });
             ask.addEventListener('change', () => {
-                if (ask.checked) c.find = true; else delete c.find;
+                if (ask.checked) own(id).find = true;
+                else { delete text._categories?.[id]?.find; tidy(id); }
                 paint();
                 touched();
             });
-            panel.querySelector('.sp-about-done').addEventListener('click', () => { aboutOpen = null; panel.remove(); });
+            panel.querySelector('.sp-about-done').addEventListener('click', () => {
+                aboutOpen = null;
+                panel.remove();
+                box.querySelectorAll('.sp-cat-on').forEach((x) => x.classList.remove('sp-cat-on'));
+            });
             paint();
             box.querySelector('.sp-found') ? box.querySelector('.sp-found').before(panel) : box.append(panel);
             if (focus) desc.focus();

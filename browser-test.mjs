@@ -411,9 +411,23 @@ try {
         assert.match(await p.textContent('.sp-status'), /Prompt copied/);
         await p.click('.sp-about-done');
         assert.equal(await p.$('.sp-about'), null);
-        await p.click('.sp-cat[data-id="bob"] .sp-cat-name'); // its name opens it again
+        await p.click('.sp-cat[data-id="bob"] .sp-cat-pct'); // selecting it opens it again
         assert.equal(await p.inputValue('.sp-about textarea'), 'My co-author: the methods section');
+        assert.ok(await p.$eval('.sp-cat[data-id="bob"]', (x) => x.classList.contains('sp-cat-on')));
+        // a built-in category has a description too; an agent can find facts and quotes, never the author's words
+        const unsaved = await p.textContent('.sp-save');
+        await p.click('.sp-cat[data-id="me"] .sp-cat-pct');
+        assert.match(await p.textContent('.sp-about-q'), /Whose words are My words\?/);
+        assert.ok(await p.$eval('.sp-about .sp-check', (x) => x.hidden));
+        assert.equal(await p.textContent('.sp-save'), unsaved); // opening it changes nothing
+        await p.fill('.sp-about textarea', 'Mine, typed or dictated');
+        assert.equal(await p.evaluate(() => Slop.text._categories.me.about), 'Mine, typed or dictated');
+        await p.fill('.sp-about textarea', '');
+        assert.equal(await p.evaluate(() => Slop.text._categories.me), undefined);
+        await p.click('.sp-cat[data-id="data"] .sp-cat-pct');
+        assert.ok(await p.$eval('.sp-about .sp-check', (x) => !x.hidden));
         await p.click('.sp-about-done');
+        assert.equal(await p.$('.sp-cat-on'), null);
     });
 
     await check('what an agent marked waits for Keep or Undo', async () => {
