@@ -244,14 +244,18 @@ html.slop-dark {
 .sp-goto:hover { border-color: var(--_ink-3); color: var(--_ink) !important; }
 .sp-pie.sp-mini { width: 10px; height: 10px; }
 
-/* taking a color from the page: the point is a ring, and its color a circle beside it, joined by a line */
+/* taking a color from the page: a ring at the point, and a magnifier beside it (a copy of the page, scaled up around
+   the point) joined to it by a line, with the color as its rim */
 .slop-sampling, .slop-sampling * { cursor: crosshair !important; }
-.slop-sampler { position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; font: 600 11px/1 var(--_mono); }
+.slop-sampler, .slop-sampler * { pointer-events: none !important; }
+.slop-sampler { position: fixed; inset: 0; z-index: 2147483647; font: 600 11px/1 var(--_mono); }
 .slop-sampler svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .slop-sampler line { stroke: #fff; stroke-width: 3; filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.6)); }
 .slop-sampler-ring, .slop-sampler-lens, .slop-sampler-hex { position: absolute; transform: translate(-50%, -50%); }
 .slop-sampler-ring { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5); }
-.slop-sampler-lens { width: 44px; height: 44px; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25), 0 4px 12px rgb(0 0 0 / 0.3); }
+.slop-sampler-lens { box-sizing: content-box; overflow: hidden; border: 6px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.3), 0 6px 18px rgb(0 0 0 / 0.35); }
+.slop-sampler-page { position: absolute; left: 0; top: 0; transform-origin: 0 0; transform: scale(1); }
+.slop-sampler-dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; outline: 1px solid #fff; box-shadow: 0 0 0 2px rgb(0 0 0 / 0.6); }
 .slop-sampler-hex { padding: 3px 5px; border-radius: 4px; background: #1e1b24; color: #fff; white-space: nowrap; }
 .slop-sampler-hex:empty { display: none; }
 

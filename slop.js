@@ -501,7 +501,7 @@ const Slop = (() => {
     };
     // the [data-slop] elements and meters in what the page added after start (a single-page app draws late)
     function added(n) {
-        if (n.nodeType !== 1 || n.closest('.slop-panel')) return;
+        if (n.nodeType !== 1 || n.closest('.slop-panel, .slop-sampler')) return;
         seenSoon();
         if (n.matches('[data-slop-list]')) fillList(n);
         if (n.matches('[data-slop], [data-slop-attr]')) fillOne(n);
@@ -1074,24 +1074,65 @@ const Slop = (() => {
                 addEventListener('keydown', esc, true);
             });
         }
+        // a magnifier beside the point, not over it: a copy of the page, scaled up around the point, in a circle up and to
+        // the right (or wherever there's room), joined to a ring at the point by a line. The circle's rim is the color
+        const LENS = { r: 64, zoom: 3, off: 96 };
         function sampler() {
-            const lens = el('div', 'slop-sampler', '<svg aria-hidden="true"><line></line></svg><i class="slop-sampler-ring"></i><b class="slop-sampler-lens"></b><span class="slop-sampler-hex"></span>');
+            const lens = el('div', 'slop-sampler', '<svg aria-hidden="true"><line></line></svg><i class="slop-sampler-ring"></i>'
+                + '<b class="slop-sampler-lens"><span class="slop-sampler-page"></span><i class="slop-sampler-dot"></i></b><span class="slop-sampler-hex"></span>');
+            const [line, ring, big, view, label] = ['line', '.slop-sampler-ring', '.slop-sampler-lens', '.slop-sampler-page', '.slop-sampler-hex'].map((q) => lens.querySelector(q));
+            Object.assign(big.style, { width: `${LENS.r * 2}px`, height: `${LENS.r * 2}px` });
+            const root = getComputedStyle(document.documentElement).backgroundColor;
+            const body = getComputedStyle(document.body).backgroundColor;
+            view.style.background = /rgba\([^)]*,\s*0\)|transparent/.test(body) ? root : body;
+            view.style.width = `${document.documentElement.clientWidth}px`;
+            const copy = document.body.cloneNode(true);
+            view.append(copy);
             document.body.append(lens);
             document.documentElement.classList.add('slop-sampling');
-            const [line, ring, big, label] = ['line', '.slop-sampler-ring', '.slop-sampler-lens', '.slop-sampler-hex'].map((q) => lens.querySelector(q));
+            place(document.body, copy, view);
             return {
                 show(x, y, color) {
-                    // the circle up and to the right of the point, or wherever there's room
-                    const cx = x + (x > innerWidth - 90 ? -46 : 46);
-                    const cy = y + (y < 90 ? 46 : -46);
+                    const { r, zoom, off } = LENS;
+                    const cx = x + (x > innerWidth - off - r - 8 ? -off : off);
+                    const cy = y + (y < off + r + 8 ? off : -off);
                     Object.assign(ring.style, { left: `${x}px`, top: `${y}px` });
-                    Object.assign(big.style, { left: `${cx}px`, top: `${cy}px`, background: color ?? 'transparent' });
-                    Object.assign(label.style, { left: `${cx}px`, top: `${cy + 30}px` });
+                    Object.assign(big.style, { left: `${cx}px`, top: `${cy}px`, borderColor: color ?? '#fff' });
+                    view.style.transform = `translate(${r - (x + scrollX) * zoom}px, ${r - (y + scrollY) * zoom}px) scale(${zoom})`;
+                    Object.assign(label.style, { left: `${cx}px`, top: `${cy + r + 18}px` });
                     label.textContent = color ?? '';
-                    [['x1', x], ['y1', y], ['x2', cx], ['y2', cy]].forEach(([k, v]) => line.setAttribute(k, v));
+                    // the line runs from the ring to the circle's rim
+                    const d = Math.hypot(cx - x, cy - y);
+                    const ex = cx - ((cx - x) / d) * (r + 3);
+                    const ey = cy - ((cy - y) / d) * (r + 3);
+                    [['x1', x], ['y1', y], ['x2', ex], ['y2', ey]].forEach(([k, v]) => line.setAttribute(k, v));
                 },
                 remove() { lens.remove(); document.documentElement.classList.remove('slop-sampling'); },
             };
+        }
+        // the copy shows the page as it is on screen: what's fixed or sticky where it is now, panels scrolled as they are,
+        // and canvases drawn
+        function place(from, to, view) {
+            const a = document.createTreeWalker(from, NodeFilter.SHOW_ELEMENT);
+            const b = document.createTreeWalker(to, NodeFilter.SHOW_ELEMENT);
+            const pinned = [];
+            const scrolled = [];
+            for (let x = a.currentNode, y = b.currentNode; x && y; x = a.nextNode(), y = b.nextNode()) {
+                if (x.classList?.contains('slop-sampler')) break; // the magnifier itself, if it got copied
+                const pos = getComputedStyle(x).position;
+                if (pos === 'fixed' || pos === 'sticky') pinned.push([x, y]);
+                if (x.scrollTop || x.scrollLeft) scrolled.push([x, y]);
+                if (x instanceof HTMLCanvasElement && y instanceof HTMLCanvasElement) {
+                    try { y.getContext('2d').drawImage(x, 0, 0); } catch { /* a canvas it can't read */ }
+                }
+            }
+            const box = view.getBoundingClientRect();
+            pinned.forEach(([x, y]) => {
+                const want = x.getBoundingClientRect();
+                const got = y.getBoundingClientRect();
+                y.style.translate = `${want.left + scrollX - (got.left - box.left)}px ${want.top + scrollY - (got.top - box.top)}px`;
+            });
+            scrolled.forEach(([x, y]) => { y.scrollTop = x.scrollTop; y.scrollLeft = x.scrollLeft; });
         }
         // the color on the page at a point: a letter's color over a letter, a shape's fill, an image's pixel (when the
         // browser lets it be read), or else the first background that isn't see-through

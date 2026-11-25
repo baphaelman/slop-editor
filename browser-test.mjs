@@ -344,14 +344,24 @@ try {
         await p.mouse.move(200, 200, { steps: 4 });
         await p.mouse.move(60, 340, { steps: 4 });
         const lens = await p.$eval('.slop-sampler', (s) => {
-            const at = (q) => { const r = s.querySelector(q).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+            const rect = (q) => s.querySelector(q).getBoundingClientRect();
+            const mid = (r) => [r.left + r.width / 2, r.top + r.height / 2];
+            const big = rect('.slop-sampler-lens');
             const line = s.querySelector('line');
-            return { ring: at('.slop-sampler-ring'), lens: at('.slop-sampler-lens'), fill: getComputedStyle(s.querySelector('.slop-sampler-lens')).backgroundColor, hex: s.querySelector('.slop-sampler-hex').textContent, line: ['x1', 'y1', 'x2', 'y2'].map((k) => +line.getAttribute(k)) };
+            const seen = s.querySelector('.slop-sampler-page #paint').getBoundingClientRect(); // the magnified copy of what's under the point
+            return { ring: mid(rect('.slop-sampler-ring')), lens: mid(big), r: big.width / 2, rim: getComputedStyle(s.querySelector('.slop-sampler-lens')).borderTopColor, hex: s.querySelector('.slop-sampler-hex').textContent,
+                line: ['x1', 'y1', 'x2', 'y2'].map((k) => +line.getAttribute(k)), seen: [seen.left, seen.top, seen.width] };
         });
         assert.deepEqual(lens.ring.map(Math.round), [60, 340]);
-        assert.ok(Math.hypot(lens.lens[0] - 60, lens.lens[1] - 340) > 40, 'the circle is beside the point, not over it');
-        assert.deepEqual(lens.line.map(Math.round), [60, 340, ...lens.lens.map(Math.round)]);
-        assert.equal(lens.fill, 'rgb(18, 52, 86)');
+        // beside the point, clear of it
+        assert.ok(Math.hypot(lens.lens[0] - 60, lens.lens[1] - 340) > lens.r + 20, 'the magnifier is beside the point, not over it');
+        assert.deepEqual(lens.line.slice(0, 2).map(Math.round), [60, 340]);
+        assert.ok(Math.abs(Math.hypot(lens.line[2] - lens.lens[0], lens.line[3] - lens.lens[1]) - lens.r) < 6, 'the line reaches its rim');
+        // it shows the page around the point, three times bigger: the 80px square under it, now 240px, around its middle
+        assert.equal(Math.round(lens.seen[2]), 240);
+        assert.ok(lens.seen[0] < lens.lens[0] && lens.seen[0] + 240 > lens.lens[0] && lens.seen[1] < lens.lens[1] && lens.seen[1] + 240 > lens.lens[1]);
+        assert.equal(Math.round(lens.lens[0] - lens.seen[0]), 40 * 3); // (60 - 20) px into the square
+        assert.equal(lens.rim, 'rgb(18, 52, 86)');
         assert.equal(lens.hex, '#123456');
         await p.mouse.up();
         assert.equal(await color(), '#123456');
