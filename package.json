@@ -1,6 +1,6 @@
 {
   "name": "slop-editor",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A slop editor: track who wrote every word on a page (the AI, you, or nobody), then read the slop and make it yours.",
   "homepage": "https://baphaelman.github.io/slop-editor/",
   "repository": {
@@ -16,7 +16,8 @@
     "./slop.js": "./slop.js",
     "./slop.css": "./slop.css",
     "./react": "./react.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./vite": "./vite.mjs"
   },
   "files": [
     "cli.mjs",
@@ -24,12 +25,15 @@
     "react.mjs",
     "slop.js",
     "slop.css",
+    "jsx.mjs",
+    "vite.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test test.mjs",
-    "test:browser": "node browser-test.mjs"
+    "test:browser": "node browser-test.mjs",
+    "prepublishOnly": "node -e \"const {version:v}=require('./package.json'),{version:w}=require('./.claude-plugin/plugin.json');if(v!==w){console.error('package.json says '+v+' but .claude-plugin/plugin.json says '+w+': make them match');process.exit(1)}const o=JSON.parse(require('child_process').execFileSync('npm',['view','slop-editor','versions','--json'],{encoding:'utf8'}));if(o.includes(v)){console.error('slop-editor '+v+' is already on npm ('+o.at(-1)+' is the latest): bump the version in package.json and .claude-plugin/plugin.json first');process.exit(1)}\""
   },
   "engines": {
     "node": ">=18"
@@ -53,5 +57,8 @@
   },
   "devDependencies": {
     "playwright-core": "^1.65.1"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.15"
   }
 }

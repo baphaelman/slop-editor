@@ -3,6 +3,9 @@
 //
 //   slop-editor install <page.html>   add the text block and inline slop.css and slop.js into a page (it stays one file)
 //              [--auto]               also move the page's static prose (paragraphs, headings, list items) into the block
+//              [--author ai|me]       whose words the moved text is: the AI's (the default) or the user's own
+//   slop-editor install <file.jsx | folder>   a React app: the Vite plugin and entry, and with --auto the components' prose
+//              [--text words.json]    where the words go (src/slopText.json), [--dry-run] to see what it would do
 //   slop-editor sync <page.html …>    re-inline the current slop.css and slop.js into pages that have them
 //   slop-editor edit <page.html>      serve the page's folder on localhost with the editor, which saves into the file
 //                                     (it re-inlines the current code first, and serves slop.js/slop.css to a page that links them)
@@ -13,10 +16,12 @@
 //              [--hook]               as a Claude Code SessionStart hook's context, and nothing when there are none
 import http from 'node:http';
 import net from 'node:net';
-import { readFile, writeFile, rename, stat, readdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat, readdir, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
 import { markup } from './markup.mjs';
+import { textFileIn } from './vite.mjs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,8 +73,12 @@ function install(html) {
     return `${out}\n${tag}<script>Slop.start();</script>\n`;
 }
 
-// --auto: the page's prose goes into the block as AI text, and Slop.start() runs once the marked elements exist
-function auto(html) {
+// whose words moved text is: the AI's (a plain string) or the user's (--author me)
+const asAuthor = (value, author) => (author === 'me' ? [{ me: value }] : value);
+
+// --auto: the page's prose goes into the block as AI text (or the author asked for), and Slop.start() runs once the
+// marked elements exist
+function auto(html, author) {
     const found = markup(html);
     const block = readBlock(html, 'the page');
     const { version, ...have } = block;
@@ -78,7 +87,7 @@ function auto(html) {
         if (group === 'version') continue;
         for (const [key, value] of Object.entries(texts)) {
             if (have[group]?.[key] !== undefined) continue;
-            (have[group] ||= {})[key] = value;
+            (have[group] ||= {})[key] = asAuthor(value, author);
             added.push(`${group}.${key}`);
         }
     }
@@ -92,6 +101,135 @@ function auto(html) {
         out = out.slice(0, end) + '\n' + call + out.slice(end);
     }
     return { html: out, texts: found.texts.length, skipped: found.skipped };
+}
+
+/* ---------- install in a React app ---------- */
+
+// the nearest folder up from a file that has a package.json: the project
+function projectRoot(file) {
+    for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+        if (existsSync(path.join(dir, 'package.json'))) return dir;
+        if (dir === path.dirname(dir)) return path.dirname(file);
+    }
+}
+// a file's name as a key: ArticleOne.jsx -> articleOne, single-cycles.jsx -> singleCycles
+const keyOf = (file) => path.basename(file).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+(.)?/gi, (_, c = '') => c.toUpperCase()).replace(/^./, (c) => c.toLowerCase());
+// the index after the last import, where a new one goes
+function afterImports(src) {
+    let end = 0;
+    for (const m of src.matchAll(/^import\b[^;]*?\bfrom\s*['"][^'"]+['"];?[ \t]*$/gm)) end = m.index + m[0].length;
+    return end;
+}
+
+// what an app needs to run the editor: the plugin in vite.config, and Slop.start() in the entry. Each is skipped when it's
+// there already. Returns what it did, and what it couldn't, for the user
+async function setupVite(root, { text, dry }) {
+    const did = [], todo = [];
+    const edit = async (file, change, what) => {
+        const src = await readFile(file, 'utf8');
+        const next = change(src);
+        if (next === null) return false;
+        if (next !== src) {
+            if (!dry) await writeFile(file, next);
+            did.push(`${path.relative(process.cwd(), file)}: ${what}`);
+        }
+        return true;
+    };
+    const config = ['vite.config.js', 'vite.config.mjs', 'vite.config.ts', 'vite.config.mts'].map((f) => path.join(root, f)).find(existsSync);
+    if (!config) {
+        todo.push('No vite.config found, and Vite is the only setup done for you. In another build, put the text block, slop.js and slop.css in the\n    page yourself (README, "Install"), and keep the text in a JSON file.');
+        return { did, todo };
+    }
+    const options = text ? `{ text: '${text}' }` : '';
+    const plugged = await edit(config, (src) => {
+        if (/slop-editor\/vite/.test(src)) return src;
+        const open = /\bplugins\s*:\s*\[/.exec(src);
+        if (!open) return null;
+        const inside = open.index + open[0].length;
+        const added = `${src.slice(0, inside)}slopEditor(${options})${/^\s*\]/.test(src.slice(inside)) ? '' : ', '}${src.slice(inside)}`;
+        const at = afterImports(added);
+        return `${added.slice(0, at)}${at ? '\n' : ''}import slopEditor from 'slop-editor/vite';${at ? '' : '\n'}${added.slice(at)}`;
+    }, 'added the slopEditor() plugin');
+    if (!plugged) todo.push(`In ${path.basename(config)}: import slopEditor from 'slop-editor/vite', and add slopEditor(${options}) to plugins.`);
+    // the entry: the module script index.html loads
+    const page = path.join(root, 'index.html');
+    const entry = existsSync(page)
+        ? [...(await readFile(page, 'utf8')).matchAll(/<script\b[^>]*>/gi)].map((m) => m[0]).find((t) => /\btype=["']module["']/.test(t) && /\bsrc=/.test(t))?.match(/\bsrc=["']([^"']+)["']/)?.[1]
+        : null;
+    const entryFile = entry && path.join(root, entry.replace(/^\//, ''));
+    const started = entryFile && existsSync(entryFile) && await edit(entryFile, (src) => {
+        if (/\bSlop\.start\(/.test(src)) return src;
+        if (/slop-editor\/react/.test(src)) return null; // it imports Slop its own way: leave the call to the user
+        const at = afterImports(src);
+        return `${src.slice(0, at)}${at ? '\n' : ''}import Slop from 'slop-editor/react';\n\nSlop.start();${at ? '' : '\n'}${src.slice(at)}`;
+    }, 'Slop.start()');
+    if (!started) todo.push(`In the file your index.html loads${entry ? ` (${entry})` : ''}: import Slop from 'slop-editor/react', and call Slop.start() once, before anything renders.`);
+    return { did, todo };
+}
+
+async function installReact(files, { auto, author, text, dry }) {
+    const cwd = process.cwd();
+    const rel = (f) => path.relative(cwd, f) || f;
+    const projects = new Map(); // project folder -> its words and the files in it
+    for (const file of files) {
+        const root = projectRoot(file);
+        if (!projects.has(root)) projects.set(root, { files: [] });
+        projects.get(root).files.push(file);
+    }
+    for (const [root, project] of projects) {
+        const textRel = text ?? textFileIn(root);
+        const textFile = path.resolve(root, textRel);
+        const existed = existsSync(textFile);
+        const block = existed ? JSON.parse(await readFile(textFile, 'utf8')) : { version: 0 };
+        const names = new Set();
+        let moved = 0, changed = false;
+        const left = [];
+        const { did, todo } = await setupVite(root, { text, dry });
+        for (const file of project.files) {
+            if (!auto) break;
+            let name = keyOf(file);
+            // two files with one name (a Header in two folders): the second takes its folder's name too
+            if (names.has(name)) name = keyOf(path.dirname(file)) + name[0].toUpperCase() + name.slice(1);
+            names.add(name);
+            const { moveJsx } = await import('./jsx.mjs'); // Babel loads only here
+            let done;
+            try {
+                done = moveJsx(await readFile(file, 'utf8'), { name, ts: /\.tsx?$/i.test(file), have: block[name] });
+            } catch (e) {
+                console.error(`${rel(file)}: not read (${e.message.split('\n')[0]})`);
+                continue;
+            }
+            const count = done.texts + done.attrs;
+            for (const [group, texts] of Object.entries(done.block)) {
+                for (const [key, value] of Object.entries(texts)) (((block[name] ||= {})[group] ||= {})[key] = asAuthor(value, author));
+            }
+            if (count) {
+                if (!dry) await writeFile(file, done.code);
+                changed = true;
+                moved += count;
+            }
+            const lines = (what, list) => (list.length ? `\n    ${what}: line${list.length > 1 ? 's' : ''} ${list.join(', ')}` : '');
+            console.log(`${rel(file)}: ${dry ? 'would move' : 'moved'} ${done.texts} ${done.texts === 1 ? 'text' : 'texts'}`
+                + (done.attrs ? ` and ${done.attrs} alt texts, tooltips and the like` : '') + (count ? '' : ' (nothing to move)')
+                + lines('prose with markup it can\'t carry, or words the code builds', done.skipped)
+                + lines('words in elements that aren\'t prose (a span, an i, a div)', done.loose)
+                + lines('an alt text or the like outside a component it could add a hook to', done.attrsLeft));
+        }
+        if ((changed || !existed) && !dry) {
+            block.version = existed ? (block.version ?? 0) + 1 : 1; // an editor that's open fails its next save instead of overwriting
+            await mkdir(path.dirname(textFile), { recursive: true });
+            await writeFile(textFile, JSON.stringify(block, null, 2) + '\n');
+        }
+        if (auto) console.log(`${moved ? (dry ? 'Would put' : 'Put') : 'No'} ${moved ? `${moved} texts` : 'texts'} ${moved ? 'in' : 'moved into'} ${rel(textFile)}${moved ? ` as ${author === 'me' ? 'yours (me)' : 'AI text'}` : ''}`);
+        for (const line of did) console.log(`${dry ? 'would change ' : ''}${line}`);
+        const pkg = await readFile(path.join(root, 'package.json'), 'utf8').then(JSON.parse, () => ({}));
+        if (!{ ...pkg.dependencies, ...pkg.devDependencies }['slop-editor']) todo.push('Add the package to the project: npm i slop-editor');
+        if (todo.length) console.log(`\nStill to do:\n${todo.map((t) => `  - ${t}`).join('\n')}`);
+    }
+    console.log('\nNext: run your dev server. The page gets an Edit text button, and saves go into the words file.\n'
+        + 'Readers see nothing until you pick what they see in the editor ("Readers see"); put <SlopMeter /> (from \'slop-editor/react\')\n'
+        + 'where the meter should go. Texts the code builds (a title from a variable, text in a data array) are still yours to move:\n'
+        + 'render them with <SlopText path="…" /> or Slop.words(\'…\'). Adding and removing paragraphs in the editor needs slopList.');
 }
 
 /* ---------- check ---------- */
@@ -141,13 +279,13 @@ async function check(file) {
 // a category of the page's own can ask an agent to find its words: {"about": "whose words they are", "find": true}
 const waiting = (text) => Object.entries(text?._categories ?? {}).filter(([, c]) => c?.find).map(([id, c]) => ({ id, label: c.label || id, about: c.about ?? '' }));
 const SKIP = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'vendor']);
-async function pagesIn(dir, found = [], depth = 0) {
+async function pagesIn(dir, found = [], depth = 0, pattern = /\.(html?|json)$/i) {
     if (depth > 8 || found.length > 5000) return found;
     for (const d of await readdir(dir, { withFileTypes: true })) {
         if (d.name.startsWith('.') || SKIP.has(d.name)) continue;
         const p = path.join(dir, d.name);
-        if (d.isDirectory()) await pagesIn(p, found, depth + 1);
-        else if (/\.(html?|json)$/i.test(d.name)) found.push(p);
+        if (d.isDirectory()) await pagesIn(p, found, depth + 1, pattern);
+        else if (pattern.test(d.name)) found.push(p);
     }
     return found;
 }
@@ -338,37 +476,57 @@ const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args.spli
 const portFlag = flag('--port') ?? process.env.PORT;
 const port = Number(portFlag ?? 5178);
 const autoFlag = args.includes('--auto') && args.splice(args.indexOf('--auto'), 1);
+const dryRun = args.includes('--dry-run') && args.splice(args.indexOf('--dry-run'), 1);
+const authorFlag = flag('--author');
+const textFlag = flag('--text');
 const noOpen = args.includes('--no-open') && args.splice(args.indexOf('--no-open'), 1);
 const hookFlag = args.includes('--hook') && args.splice(args.indexOf('--hook'), 1);
 const [cmd, ...rest] = args;
 const files = rest.map((f) => path.resolve(f));
-const usage = 'usage: slop-editor install <page.html> [--auto] | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …> | history <page.html> | pending [dir|page …] [--hook]';
+const usage = 'usage: slop-editor install <page.html | file.jsx | folder> [--auto] [--author ai|me] [--text words.json] [--dry-run] | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …> | history <page.html> | pending [dir|page …] [--hook]';
 
 if (cmd !== 'help' && cmd !== 'pending' && cmd && !files.length) {
     console.error(usage);
     process.exit(1);
 }
 try {
-    if (cmd === 'install') {
+    if (['sync', 'edit', 'check', 'history'].includes(cmd)) {
         for (const file of files) {
+            if ((await stat(file)).isDirectory()) throw new Error(`${path.relative(process.cwd(), file) || file} is a folder. ${cmd} takes a page: slop-editor ${cmd} <folder>/<page>.html`);
+        }
+    }
+    if (cmd === 'install') {
+        const author = authorFlag ?? 'ai';
+        if (!['ai', 'me'].includes(author)) throw new Error(`--author takes ai (the default) or me, not ${author}`);
+        if (authorFlag && !autoFlag) throw new Error('--author goes with --auto: it says whose words the moved text is');
+        const pages = [], sources = [];
+        for (const file of files) {
+            if ((await stat(file)).isDirectory()) sources.push(...await pagesIn(file, [], 0, /\.(?:jsx|tsx)$/i));
+            else if (/\.html?$/i.test(file)) pages.push(file);
+            else if (/\.(?:jsx|tsx|js|mjs|ts)$/i.test(file)) sources.push(file);
+            else throw new Error(`${path.relative(process.cwd(), file)}: install takes a page (.html), a React file (.jsx, .tsx) or a folder of them. Vue, Svelte and the like aren't read yet`);
+        }
+        if (!pages.length && !sources.length) throw new Error('no .jsx or .tsx files in there');
+        for (const file of pages) {
             let html = install(await readFile(file, 'utf8'));
             if (autoFlag) {
-                const done = auto(html);
+                const done = auto(html, author);
                 html = done.html;
-                console.log(`${path.relative(process.cwd(), file)}: moved ${done.texts} texts into the block`
+                console.log(`${path.relative(process.cwd(), file)}: moved ${done.texts} texts into the block${author === 'me' ? ' as yours' : ''}`
                     + (done.skipped ? `; ${done.skipped} more have markup it can't carry (spans, line breaks, icons): do those by hand` : ''));
             }
             await writeFile(file, html);
             await sync(file);
         }
-        if (autoFlag) {
+        if (pages.length && autoFlag) {
             console.log('\nStatic prose is done. Still yours to check: text the page\'s code builds (Slop.html / Slop.words), text shown only\n'
                 + 'sometimes (Slop.reveal), and anything that reads an element\'s text before Slop.start() or after an edit (Slop.onChange).\n'
                 + 'Then: slop-editor check <page.html>, and slop-editor edit <page.html>');
-        } else console.log('\nNext: mark text elements with data-slop="group.key" and put their words in the slop-text block\n'
+        } else if (pages.length) console.log('\nNext: mark text elements with data-slop="group.key" and put their words in the slop-text block\n'
             + '(as AI text to start). Add <div data-slop-meter></div> at the top (readers see\n'
             + 'nothing there unless you pick a pie chart or colors in the editor). Call Slop.start() once Slop.vars is\n'
             + 'set and before anything reads the text. Then: slop-editor edit <page.html>');
+        if (sources.length) await installReact(sources, { auto: autoFlag, author, text: textFlag, dry: dryRun });
     } else if (cmd === 'sync') {
         for (const file of files) await sync(file);
     } else if (cmd === 'edit') {

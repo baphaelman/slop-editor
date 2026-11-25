@@ -1,19 +1,19 @@
-// `slop-editor install --auto`: move a page's static prose into the slop text block, as AI text.
+// `slop-editor install --auto`: move a page's static prose into the slop text block (as AI text, or the author asked for).
 // It takes paragraphs, headings, list items, captions and quotes whose content is plain words with links, bold,
 // italic and code, and leaves everything else (labels, buttons, spans, text with other markup, text the code builds)
 // to whoever ported the page. Returns the new html and what it did.
 
-const PROSE = 'p|h[1-6]|li|dd|dt|figcaption|blockquote';
+export const PROSE = 'p|h[1-6]|li|dd|dt|figcaption|blockquote';
 const SKIP = 'script|style|svg|textarea|pre|select|button|template|noscript|head|code|kbd|nav|label|form|iframe|canvas|math';
 const BLOCKS = /<(?:p|ul|ol|li|div|h[1-6]|section|article|aside|table|blockquote|details|figure|dl|dd|dt|header|footer|main|br|img|span|svg|input|button|select|textarea)\b/i;
 // elements that hold other prose: look inside them instead of taking them whole
 const CONTAINERS = /<(?:p|ul|ol|li|div|section|article|aside|table|blockquote|details|figure|dl|dd|dt|header|footer|main|h[1-6])\b/i;
 const ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", ndash: '–', mdash: '—', hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”' };
-const MIN_WORDS = 3;
+export const MIN_WORDS = 3;
 
 const decode = (s) => s.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(\w+));/gi, (all, d, x, n) =>
     d ? String.fromCodePoint(+d) : x ? String.fromCodePoint(parseInt(x, 16)) : (ENTITIES[n] ?? all));
-const escape = (s) => s.replace(/([\\*\[\]{}`])/g, '\\$1');
+export const escape = (s) => s.replace(/([\\*\[\]{}`])/g, '\\$1');
 
 // inner HTML -> the format's inline markup, or null if it holds anything the format can't say
 function convert(inner) {
@@ -47,8 +47,8 @@ function convert(inner) {
     return out.replace(/\s+/g, ' ').trim();
 }
 
-const words = (s) => s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*`\\]/g, '').split(/\s+/).filter((w) => /\w/.test(w)).length;
-const slug = (s) => s.toLowerCase().replace(/<[^>]*>/g, '').replace(/&\w+;/g, ' ').match(/[a-z0-9]+/g)?.slice(0, 2).join('-') || '';
+export const words = (s) => s.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*`\\]/g, '').split(/\s+/).filter((w) => /\w/.test(w)).length;
+export const slug = (s) => s.toLowerCase().replace(/<[^>]*>/g, '').replace(/&\w+;/g, ' ').match(/[a-z0-9]+/g)?.slice(0, 2).join('-') || '';
 
 export function markup(html) {
     const body = /<body\b[^>]*>/i.exec(html);
