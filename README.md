@@ -126,7 +126,7 @@ import Slop, { SlopText, SlopMeter, slopAttrs, slopList, useSlop } from 'slop-ed
 
 ## The editor
 
-`slop-editor edit page.html` serves the page's folder on 127.0.0.1 and opens the page with an **Edit text** button. Published, the page shows no sign of the editor. `Slop.start({edit: 'local'})` gives every visitor an editor that saves in their browser instead (the demo page uses it). When the page's author publishes a new version, a visitor's saved edits carry over: the author's changes win, text by text, and the visitor's stay everywhere else.
+`slop-editor edit page.html` serves the page's folder on 127.0.0.1 and opens the page with an **Edit text** button. Published, the page shows no sign of the editor. `Slop.start({edit: 'local'})` gives every visitor an editor that saves in their browser instead (the demo page uses it). When the page's author publishes a new version, a visitor's saved edits carry over: the author's changes win, text by text, and the visitor's stay everywhere else. They're kept under the page's path; on a host that gives each version an address of its own, name the page instead: `Slop.start({edit: 'local', key: 'my-page'})`.
 
 - **All** shows every text, grouped by section. **Slop left** shows only the texts that aren't all yours yet; work through it until it's empty. **Repeats** shows the repeated text. **Hidden** (on pages that have some) shows alt text, tooltips and labels.
 - Each text box shows its words in their authors' colors, as readers see them with the Slop-o-meter on.

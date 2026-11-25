@@ -426,6 +426,25 @@ try {
     });
     await p.close();
 
+    // ---------- a page that names where its copy is saved (a host that gives each version its own address) ----------
+    await check('with Slop.start({key}), edits saved in the browser follow the page to a new address', async () => {
+        const named = (text) => listsPage(text).replace("Slop.start({ edit: 'local' })", "Slop.start({ edit: 'local', key: 'lists-page' })");
+        const first = await fixture();
+        await writeFile(first, named(LISTS));
+        p = await open(`file://${first}`);
+        await p.click('.slop-edit-btn');
+        await all(p);
+        await p.click(`${field('auto.title')} .sp-toggle`);
+        await p.click('.sp-save');
+        assert.ok(await p.evaluate(() => localStorage.getItem('slop-text:lists-page') !== null));
+        const moved = await fixture(); // another folder: another path, in the same browser
+        await writeFile(moved, named({ ...LISTS, version: 2, auto: { ...LISTS.auto, p3: 'Three.' } }));
+        await p.goto(`file://${moved}`);
+        assert.deepEqual(await get(p, 'auto.title'), [{ ok: 'Unmarked' }]);
+        assert.equal(await get(p, 'auto.p3'), 'Three.');
+        await p.close();
+    });
+
     // ---------- the file editor, under `slop-editor edit` ----------
     const file = await fixture();
     const server = spawn(process.execPath, [path.join(here, 'cli.mjs'), 'edit', file, '--no-open'], { stdio: ['ignore', 'pipe', 'inherit'] });

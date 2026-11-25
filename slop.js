@@ -166,6 +166,8 @@ const Slop = (() => {
     // whoever wrote the {name}), or a plain string or number (a fact)
     const vars = {};
     const config = { code: 'code' };
+    // where the browser editor keeps this page's copy: its path, or the page's own name for it (Slop.start({key}))
+    const pageKey = () => config.key ?? location.pathname;
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const stripTags = (h) => h.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
     // the class a category's words render with
@@ -743,7 +745,7 @@ const Slop = (() => {
     const startTab = () => (repeats(entries()).some((s) => s.paths.some(slopIn)) ? 'repeats' : entries().some(([p]) => slopIn(p)) ? 'slop' : 'all');
 
     function editor(mode) {
-        const LOCAL = `slop-text:${location.pathname}`;
+        const LOCAL = `slop-text:${pageKey()}`;
         // open: the first section, and any the page adds later (pasted text, say)
         // it opens on Repeats, or on Slop left when nothing is repeated
         const state = { tab: startTab(), open: new Set(groupKeys().slice(0, 1)), known: new Set(groupKeys()), focus: null };
@@ -1634,7 +1636,7 @@ const Slop = (() => {
         addEventListener('beforeunload', (e) => { if (busy || unsaved()) { e.preventDefault(); e.returnValue = ''; } });
         // a reload keeps what isn't saved, in this tab, still unsaved: a page in a frame (or a browser that skips the
         // prompt) can't ask before it goes. Kept only while the page's version is the one it was based on
-        const DRAFT = `slop-draft:${location.pathname}`;
+        const DRAFT = `slop-draft:${pageKey()}`;
         const keepDraft = () => {
             if (unsaved() && !stale) session.set(DRAFT, JSON.stringify({ base: saved.version, text }));
             else session.drop(DRAFT);
@@ -1787,7 +1789,9 @@ const Slop = (() => {
     }
 
     // set things up once the page has filled in Slop.vars. Options: code (the class `code` renders with),
-    // edit: 'local' (an editor anyone can use, saving in their browser; under `slop-editor edit` it saves into the file)
+    // edit: 'local' (an editor anyone can use, saving in their browser; under `slop-editor edit` it saves into the file),
+    // key (the name the browser editor saves under, for a host that gives each version of the page an address of its
+    // own; the page's path otherwise)
     function start(options = {}) {
         Object.assign(config, options);
         fill();
@@ -1802,7 +1806,7 @@ const Slop = (() => {
         // their changes win and the visitor's stay everywhere else (a copy saved before 0.4 has no baseText, so it's dropped)
         const local = () => {
             if (options.edit !== 'local') return;
-            const key = `slop-text:${location.pathname}`;
+            const key = `slop-text:${pageKey()}`;
             try {
                 const saved = JSON.parse(store.get(key));
                 if (saved?.base === text.version) { text = saved.text; applyColors(); changed(); }
