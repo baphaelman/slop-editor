@@ -54,6 +54,12 @@ test('makeup counts every category, data included', () => {
     assert.equal(m.letters, 8);
 });
 
+test('code is a fact: shown and counted as data, whoever wrote it', () => {
+    const m = Slop.makeup([['run ', '`npx x`', ' or ', { me: 'type `ls`' }]]);
+    assert.deepEqual(m.counts, { ai: 5, data: 6, me: 4 });
+    assert.match(Slop.render('run `npx x`'), /<span class="code"><span class="slop-data">npx x<\/span><\/span>/);
+});
+
 test('share: what is mine (typed or approved), not counting spaces, data or values', () => {
     const s = Slop.share([['ab ', { me: 'c ' }, { ok: 'd ' }, { data: 'zzzz' }, '{n}']]);
     assert.equal(s.fraction, 0.5);
@@ -111,7 +117,7 @@ test('markup: links, emphasis, code, values', () => {
     const runs = Slop.runs(['See [the **docs**](https://x.y) and ', { me: '`code`' }, ' {n}']);
     assert.equal(runs.find((r) => r.b).text, 'docs');
     assert.equal(runs.find((r) => r.b).link.href, 'https://x.y');
-    assert.equal(runs.find((r) => r.code).by, 'me');
+    assert.equal(runs.find((r) => r.code).by, 'data');
     assert.equal(runs.find((r) => r.v).v, 'n');
     assert.equal(Slop.readable('a {n} b'.replace('{n}', '\\{n}')), 'a {n} b');
 });

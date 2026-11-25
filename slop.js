@@ -8,8 +8,8 @@
    Top-level keys that start with "_" aren't text: "_categories" holds the page's own categories and colors,
    {"<id>": {"label": "...", "color": "#rrggbb"}}, for built-in ones too, and "_show" what readers see: "nothing" (the
    default), "pie" (a pie of who wrote what, with a legend) or "colors" (the Slop-o-meter switch, which colors the words).
-   Inside any text: [label](url) is a link, **bold**, *italic*, `code`, [[key]] a key cap, {name} a value the page
-   fills in (Slop.vars), and \ makes the next character literal.
+   Inside any text: [label](url) is a link, **bold**, *italic*, `code` (a fact, shown as data), [[key]] a key cap,
+   {name} a value the page fills in (Slop.vars), and \ makes the next character literal.
 
    A blank line starts a new paragraph in a <p>, <li> or <dd>.
 
@@ -107,7 +107,8 @@ const Slop = (() => {
     const same = (a, b) => a.by === b.by && a.link === b.link && a.b === b.b && a.i === b.i && a.code === b.code && a.key === b.key;
 
     // the text as it reads: runs of one author's words (`by`: the category) with their formatting (b, i, code, key)
-    // and the link they sit in, if any. A {name} is a run of its own with `v` set
+    // and the link they sit in, if any. A {name} is a run of its own with `v` set. Code is a fact: whoever wrote it,
+    // a command or a file name reads as data
     function runs(value) {
         const text = plain(value);
         const authors = authorsByChar(value);
@@ -116,7 +117,7 @@ const Slop = (() => {
         let linkEnd = -1;
         let linkTail = 0;
         const push = (s, by, v) => {
-            const run = { text: s, by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v };
+            const run = { text: s, by: st.code ? 'data' : by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v };
             const last = out[out.length - 1];
             if (last && !last.v && !v && same(last, run)) last.text += s;
             else out.push(run);

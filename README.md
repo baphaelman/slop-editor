@@ -68,7 +68,7 @@ Slop is only ever the AI's words. Other categories are other people's.
 "bob": { "label": "Bob", "about": "My co-author: the methods section, and quotes from his thesis", "find": true }
 ```
 
-Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
+Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` `` (a fact: shown and counted as data, whoever wrote it), `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
 
 **Paragraphs.** A blank line in a text shown in a `<p>`, `<li>` or `<dd>` starts a paragraph of its own: the element shows the first, and a copy of it after it shows each of the others (`data-slop-more` instead of `data-slop`). Markup doesn't carry across a blank line. Anywhere else a line break is a `<br>`. An element whose text is empty is hidden (`.slop-empty`), except while the editor is open.
 
