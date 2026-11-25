@@ -328,26 +328,19 @@ try {
         assert.ok(chips.length > 2 && descending(chips), String(chips));
     });
 
-    await check('the color picker: a ring where you pick, its color in a circle beside it, presets, Default, Revert colors', async () => {
+    await check('a category\'s color: the browser\'s picker, an eyedropper joined to its right, and Revert colors', async () => {
         const color = () => p.evaluate(() => Slop.text._categories?.ai?.color);
-        await p.click('.sp-cat[data-id="ai"] .sp-swatch');
-        assert.ok(await p.isVisible('.sp-picker'));
-        const sv = await p.$('.sp-sv');
-        const box = await sv.boundingBox();
-        await p.mouse.click(box.x + box.width * 0.8, box.y + box.height * 0.6);
-        const picked = await color();
-        assert.match(picked, /^#[0-9a-f]{6}$/);
-        const [ring, loupe] = await p.$$eval('.sp-sv-ring, .sp-sv-loupe', (xs) => xs.map((x) => [x.offsetLeft, x.offsetTop, getComputedStyle(x).backgroundColor]));
-        assert.equal(ring[2], loupe[2]); // the same color, beside the point
-        assert.ok(Math.abs(ring[0] - loupe[0]) > 8 && Math.abs(ring[1] - loupe[1]) > 8);
-        await p.click('.sp-preset[data-color="#2b9fc0"]');
+        await p.locator('.sp-cat[data-id="ai"] input[type="color"]').fill('#2b9fc0');
         assert.equal(await color(), '#2b9fc0');
         assert.equal(await p.$eval('.sp-cat[data-id="ai"] .sp-swatch', (x) => getComputedStyle(x).backgroundColor), 'rgb(43, 159, 192)');
-        await p.click('.sp-pick-default');
-        assert.equal(await color(), undefined);
-        await p.click('.sp-preset[data-color="#d4469a"]');
-        await p.keyboard.press('Escape');
-        assert.equal(await p.$('.sp-picker'), null);
+        // the eyedropper, with the browser's stood in for: it takes a color from anywhere on the screen
+        await p.evaluate(() => { window.EyeDropper = class { open() { return Promise.resolve({ sRGBHex: '#d4469a' }); } }; });
+        await p.click('.sp-tabs [data-tab="all"]'); // a redraw, now that the browser "has" one
+        const [dot, dropper] = await p.$$eval('.sp-cat[data-id="ai"] .sp-swatch, .sp-cat[data-id="ai"] .sp-dropper', (xs) => xs.map((x) => x.getBoundingClientRect()));
+        assert.ok(Math.abs(dropper.left - dot.right) < 4 && Math.abs(dropper.top + dropper.height / 2 - (dot.top + dot.height / 2)) < 2); // joined, on its right
+        await p.click('.sp-cat[data-id="ai"] .sp-dropper');
+        await p.waitForFunction(() => Slop.text._categories?.ai?.color === '#d4469a');
+        assert.equal(await p.$eval('.sp-cat[data-id="ai"] input[type="color"]', (x) => x.value), '#d4469a');
         await p.click('.sp-cat-revert');
         assert.equal(await color(), undefined);
         assert.ok(await p.$eval('.sp-cat-revert', (x) => x.hidden));
