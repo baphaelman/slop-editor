@@ -30,6 +30,7 @@ npx slop-editor edit page.html     # open the page with the editor; it saves int
 npx slop-editor check page.html    # how much is yours, repeated text, texts the block lacks
 npx slop-editor history page.html  # what each git commit did to who wrote what (a page, or a block kept as .json)
 npx slop-editor sync page.html     # re-inline the current slop.css and slop.js
+npx slop-editor pending            # categories you asked an agent to find, in the pages under this folder
 ```
 
 Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`. A site that installs `slop-editor` from npm can serve `node_modules/slop-editor/slop.js` and `slop.css` itself, so `npm update slop-editor` updates every page. Under `slop-editor edit`, a page that links a `slop.js` or `slop.css` its folder doesn't have gets the CLI's own.
@@ -59,7 +60,15 @@ A **text** is a plain string (AI) or a list mixing strings (AI), `{"me": "..."}`
 }
 ```
 
-Slop is only ever the AI's words. Other categories are other people's. Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
+Slop is only ever the AI's words. Other categories are other people's.
+
+**Categories an agent finds.** A category can say whose words it means (`"about"`), and ask an agent to find them in the page's existing text (`"find": true`). In the editor, a new category asks **Whose words are …?**, with **Ask an agent to find them**. The next agent that works on the project is told at the start of its session (with the Claude Code plugin; `npx slop-editor pending` lists them too, and **Copy a prompt** hands one to any agent now). It marks the words (never changing them), records what it changed in `"found": {"on": "2026-11-25", "before": {"<path>": <old value>}}`, and removes `"find"`. The editor then shows **An agent marked 12 texts as Bob · Keep · Undo**. An agent never puts a category on its own words: only on words that came from that person or source (a quote, a paste, a dictation), as `about` describes.
+
+```json
+"bob": { "label": "Bob", "about": "My co-author: the methods section, and quotes from his thesis", "find": true }
+```
+
+Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
 
 **Paragraphs.** A blank line in a text shown in a `<p>`, `<li>` or `<dd>` starts a paragraph of its own: the element shows the first, and a copy of it after it shows each of the others (`data-slop-more` instead of `data-slop`). Markup doesn't carry across a blank line. Anywhere else a line break is a `<br>`. An element whose text is empty is hidden (`.slop-empty`), except while the editor is open.
 
@@ -131,7 +140,7 @@ import Slop, { SlopText, SlopMeter, slopAttrs, slopList, useSlop } from 'slop-ed
 - **All** shows every text, grouped by section. **Slop left** shows only the texts that aren't all yours yet; work through it until it's empty. **Repeats** shows the repeated text. **Hidden** (on pages that have some) shows alt text, tooltips and labels.
 - Each text box shows its words in their authors' colors, as readers see them with the Slop-o-meter on.
 - Each text, section and the whole page has a pie of what it's made of, by its name, and a **slop** switch at the right. Off approves the AI's words; on takes that back. Your typed words are never touched. Every switch can be undone from the status line.
-- At the top: how much of the page is slop, and every category with its share, the biggest first (as in the meters' legends). Click a category's dot for the browser's color picker, or the eyedropper joined to its right to take a color from anywhere on the screen (in browsers that have one: Chrome, Edge). **Revert colors** puts every category back to its default. Rename a category by editing its name. **+ Category** adds one; × deletes it (its words become AI-generated).
+- At the top: how much of the page is slop, and every category with its share, the biggest first (as in the meters' legends). Click a category's dot for the browser's color picker, or drag the dot onto any color on the page to take it: the point is a ring, and its color shows in a circle beside it, joined by a line (Escape drops it). **Revert colors** puts every category back to its default. Rename a category by editing its name. **+ Category** adds one; × deletes it (its words become AI-generated).
 - Focus a text and a row of categories appears under it: **Mark all as** (or **Mark selection as**, with words selected) gives the text, or just the selection, to a category.
 - In a list, a **+** under the text you're on adds an empty paragraph after it; pointing at the + draws a line on the page where it would go. The trash can before its slop switch outlines the text on the page in dashed red; a text with words takes a second click (it asks **Remove?**), and stays red until then. A removed text stays in **All** as a row with **Restore** until the next save. New texts get new keys (`p7` between `p2` and `p3` is still called Paragraph 3 in the editor), so a key never moves to other words.
 - Click any text on the page to jump to it in the editor. Focus a text in the editor to find it on the page.

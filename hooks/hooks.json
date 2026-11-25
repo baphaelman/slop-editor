@@ -1,0 +1,12 @@
+{
+  "description": "At the start of a session, tell the agent about categories the user asked an agent to find (slop-editor pending).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli.mjs\" pending --hook", "timeout": 15 }
+        ]
+      }
+    ]
+  }
+}

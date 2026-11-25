@@ -100,14 +100,10 @@ html.slop-dark {
 .sp-cover-row .sp-pie { width: 22px; height: 22px; }
 .sp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
 .sp-cat { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px 0 4px; border: 1px solid var(--_rule); border-radius: 99px; font-size: 0.78rem; }
-/* a category's color: its dot (the browser's picker) with an eyedropper joined to its right */
-.sp-color { flex: none; display: inline-flex; align-items: center; border-radius: 99px; background: var(--_sunk); }
-.sp-swatch { position: relative; flex: none; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; cursor: pointer; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_ink) 18%, transparent); }
+.sp-swatch { position: relative; flex: none; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; cursor: pointer; touch-action: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_ink) 18%, transparent); }
 .sp-swatch:hover { box-shadow: 0 0 0 2px var(--_rule), inset 0 0 0 1px color-mix(in srgb, var(--_ink) 18%, transparent); }
 .sp-swatch input { position: absolute; inset: -4px; width: calc(100% + 8px); height: calc(100% + 8px); padding: 0; border: 0; opacity: 0; cursor: pointer; }
 .sp-swatch:focus-within { outline: 2px solid var(--_accent); outline-offset: 1px; }
-.sp-dropper { display: grid; place-items: center; width: 20px; height: 18px; margin-left: -2px; padding: 0 2px 0 4px; border: 0; border-radius: 0 99px 99px 0; background: none; color: var(--_ink-3) !important; cursor: pointer; }
-.sp-dropper:hover { color: var(--_ink) !important; }
 .sp-cat-name { min-width: 3ch; padding: 0; border: 0; border-radius: 4px; background: none; font: 600 0.78rem var(--_font); color: var(--_ink); }
 .sp-cat-name:hover { background: var(--_sunk); }
 .sp-cat-name:focus { outline: none; background: var(--_sunk); }
@@ -121,6 +117,18 @@ html.slop-dark {
 .sp-seg button:hover:not([aria-checked="true"]) { color: var(--_ink); }
 .sp-cat-add, .sp-cat-new { height: 28px; padding: 0 11px; border: 1px dashed var(--_rule); border-radius: 99px; background: none; font: 600 0.78rem var(--_font); color: var(--_ink-2); cursor: pointer; }
 .sp-cat-add:hover { border-color: var(--_ink-3); color: var(--_ink); }
+.sp-cat-revert { height: 28px; padding: 0 4px; border: 0; background: none; font: 600 0.78rem var(--_font); color: var(--_ink-3) !important; cursor: pointer; }
+.sp-cat-revert:hover { color: var(--_ink) !important; }
+/* whose words a category means, and asking an agent to find them */
+.sp-about { flex: 1 1 100%; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--_rule); border-radius: 10px; }
+.sp-about-q { font-size: 0.76rem; font-weight: 600; color: var(--_ink-2); }
+.sp-about textarea { width: 100%; resize: vertical; padding: 6px 8px; border: 1px solid var(--_rule); border-radius: 8px; background: var(--_sunk); font: 0.82rem/1.4 var(--_font); color: var(--_ink); }
+.sp-about textarea:focus { outline: none; border-color: var(--_accent); background: var(--_bg); }
+.sp-about-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sp-check { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--_ink-2); cursor: pointer; }
+.sp-check input { margin: 0; accent-color: var(--_accent); }
+.sp-about-note, .sp-found { font-size: 0.76rem; color: var(--_ink-3); }
+.sp-found { flex: 1 1 100%; padding: 6px 9px; border-radius: 8px; background: color-mix(in srgb, var(--_accent) 8%, transparent); color: var(--_ink-2); }
 .sp-cat-new { width: 150px; border-style: solid; border-color: var(--_accent); color: var(--_ink); cursor: text; outline: none; }
 
 /* tabs */
@@ -235,6 +243,17 @@ html.slop-dark {
 .sp-goto { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 8px 3px 5px; border: 1px solid var(--_rule); border-radius: 6px; background: none; font-size: 0.74rem; color: var(--_ink-2) !important; cursor: pointer; }
 .sp-goto:hover { border-color: var(--_ink-3); color: var(--_ink) !important; }
 .sp-pie.sp-mini { width: 10px; height: 10px; }
+
+/* taking a color from the page: the point is a ring, and its color a circle beside it, joined by a line */
+.slop-sampling, .slop-sampling * { cursor: crosshair !important; }
+.slop-sampler { position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; font: 600 11px/1 var(--_mono); }
+.slop-sampler svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.slop-sampler line { stroke: #fff; stroke-width: 3; filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.6)); }
+.slop-sampler-ring, .slop-sampler-lens, .slop-sampler-hex { position: absolute; transform: translate(-50%, -50%); }
+.slop-sampler-ring { width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5); }
+.slop-sampler-lens { width: 44px; height: 44px; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25), 0 4px 12px rgb(0 0 0 / 0.3); }
+.slop-sampler-hex { padding: 3px 5px; border-radius: 4px; background: #1e1b24; color: #fff; white-space: nowrap; }
+.slop-sampler-hex:empty { display: none; }
 
 /* a text with no words isn't on the page, except while the editor is open */
 html:not(.slop-editing) .slop-empty { display: none !important; }

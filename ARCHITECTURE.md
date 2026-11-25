@@ -8,7 +8,8 @@ For contributors and their agents. [README.md](README.md) is the reference for p
 |---|---|
 | `slop.js` | Everything that runs in the page, as one global `Slop`: the format (pure functions, also used by Node), the Slop-o-meter, the editor. Outside a browser it returns only the format functions. |
 | `slop.css` | The meter's and the editor's styles. Category colors aren't here: slop.js writes them into a `<style id="slop-colors">` at runtime. |
-| `cli.mjs` | `slop-editor install / sync / edit / check / history`. No dependencies. It loads the format functions from slop.js itself. |
+| `cli.mjs` | `slop-editor install / sync / edit / check / history / pending`. No dependencies. It loads the format functions from slop.js itself. |
+| `hooks/hooks.json` | The plugin's SessionStart hook: `cli.mjs pending --hook` tells each new Claude Code session about categories waiting for an agent. |
 | `markup.mjs` | `install --auto`: finds a page's static prose (p, h1â€“h6, li, dd, dt, figcaption, blockquote with plain words, links, bold, italic, code) and returns the page with `data-slop` on each and the words for the block. It skips nav, forms, buttons, code, scripts and anything with other markup (spans, `<br>`, icons), and counts those it skipped. The rest is the agent's job. |
 | `react.mjs` | `slop-editor/react`: `SlopText`, `SlopMeter`, `slopAttrs` and `useSlop`, written with `createElement` so it needs no build. It reads the global `Slop`, so slop.js loads first. |
 | `index.html` | The demo and landing page. It links `slop.js` and `slop.css` instead of inlining them. |
@@ -44,7 +45,7 @@ For contributors and their agents. [README.md](README.md) is the reference for p
 
 - **`version`** is a number. Every save through `slop-editor edit` bumps it, and a save whose `version` isn't the file's current one is refused (409). Anything that writes the block by hand must bump it too, so an open editor fails instead of overwriting newer words.
 - **`version` and top-level keys starting with `_` aren't text.**
-  - `_categories`: `{"<id>": {"label"?, "color"?}}`, the page's own categories plus color overrides for the built-ins.
+  - `_categories`: `{"<id>": {"label"?, "color"?, "about"?, "find"?, "found"?}}`, the page's own categories plus color overrides for the built-ins. `about` says whose words a category means; `find: true` asks an agent to find them; the agent then writes `found: {on, before: {path: old value}}` and drops `find`, and the editor offers Keep (drops `before`) and Undo (puts back each `before` whose words haven't changed).
   - `_show`: `"pie"` or `"colors"`. Absent means readers see nothing.
 - **A piece object's first key is its author.** Other keys are ignored. An author missing from `_categories` still works: it's labeled with its id and colored from the palette.
 - **Authorship is per character.** Every operation turns the value into one author per character (`authorsByChar`), works on that, and rebuilds the pieces with `fromChars`. That merges neighbours by the same author and returns a plain string when it's all AI. Hand-written values don't need to be tidy; the editor's output always is.
@@ -66,7 +67,7 @@ It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- â
 | categories and their colors | `colorOf`, `categories`, the generated stylesheet, the pies. |
 | colors follow the page | Reads the page's actual background and sets `.slop-dark` on `<html>`. |
 | Slop-o-meter | The readers' switch, pie and legend, and `_show`. A meter with a path measures that group and switches its section: `slop-on`/`slop-off` on the section, which the generated stylesheet reads. |
-| the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `paintInk` (the colored words behind each text box), the categories (`renderCats`, biggest share first) and their colors (the browser's `<input type="color">`, and an eyedropper from `window.EyeDropper` where there is one; `setColor(id, null)` is the default), the list's + and Remove (`plusRow`, `removeButton`, which mark the page with `flag`) and removed rows (`listRows`), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
+| the editor | `editor(mode)`, with mode `'file'` or `'local'`. Inside it: `withUndo` (every change to who wrote what), `field` (one text), `paintInk` (the colored words behind each text box), the categories (`renderCats`, biggest share first) and their colors (the browser's `<input type="color">` on a click, `dragColor`/`sampler`/`colorAt` on a drag onto the page; `setColor(id, null)` is the default), `about` (whose words, Ask an agent to find them), the list's + and Remove (`plusRow`, `removeButton`, which mark the page with `flag`) and removed rows (`listRows`), `render` (the tabs), `edit` (typing goes through `applyEdit`), the save and Revert state, and `place`/`drag` (moving and resizing the panel). |
 | the end | `refresh`, `remove`, `start`, and the public object. |
 
 `applyEdit` takes the stretch the edit replaced when the editor knows it (`at`, the selection from `beforeinput`), so a letter typed over a selection that starts with that letter is still mine; when that stretch doesn't fit the change, it compares the two versions. An undo (`was`) also takes back my letters at the edges of the stretch that the earlier version doesn't have as mine.
@@ -104,6 +105,17 @@ Keep these unless the maintainer changes them.
     - the "Try it" note colors each category's share in that category's color (so those labels are in code), with a 44px pie beside it.
 
     Don't move them into the library.
+13. **An agent never puts a category on its own words.** A category goes only on words that came from that person or source (a quote, a paste, a dictation), as its `about` says. Whether agents may use a category going forward is read from its `about`, never a switch: a switch would let AI text count as someone's, and the meter would lie.
+
+## Where this could go (not built)
+
+The slop editor is one preset of something more general: **a color-coder for a website's text, where every rule can be changed.** Words belong to categories, readers see colors and shares, an editor reassigns words, and agents follow the page's rules. In the slop-editor preset the rules are the ones above: agent text only ever goes to one category (AI, purple) by default, "slop" means only that, approval moves words from AI to approved, and the built-ins are fixed. A general version would let a page define its own:
+
+- the categories and which one new agent text lands in (or none);
+- what the switch does (here: approve), and what the meter measures (here: share of slop);
+- the rules agents follow for each category (here: never mark your own words as anyone's), written in the block as `about`.
+
+The format already allows most of it (`_categories`, `_show`); the rules that would change are principles 1, 2 and 13 and the skill's. Keep the slop editor's defaults as the preset when this happens.
 
 ## Gotchas
 

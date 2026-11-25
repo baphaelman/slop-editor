@@ -864,17 +864,16 @@ const Slop = (() => {
             for (let n = 2; id in BUILTIN || text._categories?.[id] || categories().some((c) => c.id === id); n++) id = `${base}-${n}`;
             return id;
         };
-        // the categories, the one with most of the page first (as the meters' legends)
+        // the categories, the one with most of the page first (as the meters' legends). A category of the page's own
+        // can say whose words it means and ask an agent to find them (about, find); what an agent marked waits for
+        // Keep or Undo (found.before)
         function renderCats() {
             const box = $('.sp-cats');
             box.innerHTML = '';
             const counts = makeup(entries().map(([, v]) => v)).counts;
             categories().sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0)).forEach((cat) => {
-                // the color: the browser's picker on the dot, and an eyedropper joined to its right that takes a color from
-                // anywhere on the screen (in browsers that have one)
-                const row = el('span', 'sp-cat', `<span class="sp-color"><label class="sp-swatch" title="Pick a color for ${esc(cat.label)}"><input type="color" aria-label="Color for ${esc(cat.label)}"></label>`
-                    + ('EyeDropper' in window ? `<button type="button" class="sp-dropper" title="Take a color from the page for ${esc(cat.label)}" aria-label="Take a color from the page for ${esc(cat.label)}">${DROPPER}</button>` : '')
-                    + `</span><input class="sp-cat-name" aria-label="Category name" spellcheck="false"><b class="sp-cat-pct"></b>`
+                const row = el('span', 'sp-cat', `<label class="sp-swatch" title="Click to pick a color for ${esc(cat.label)}, or drag onto the page to take one from it"><input type="color" aria-label="Color for ${esc(cat.label)}"></label>`
+                    + `<input class="sp-cat-name" aria-label="Category name" spellcheck="false"><b class="sp-cat-pct"></b>`
                     + (cat.builtin ? '' : `<button type="button" class="sp-cat-x" title="Delete ${esc(cat.label)}: its words become AI-generated">×</button>`));
                 row.dataset.id = cat.id;
                 const picker = row.querySelector('input[type="color"]');
@@ -889,9 +888,7 @@ const Slop = (() => {
                 picker.value = hex(swatch(cat));
                 dot.style.background = swatch(cat);
                 picker.addEventListener('input', () => pick(picker.value));
-                row.querySelector('.sp-dropper')?.addEventListener('click', () => {
-                    new window.EyeDropper().open().then((r) => pick(hex(r.sRGBHex))).catch(() => { /* Esc */ });
-                });
+                dragColor(dot, pick);
                 const name = row.querySelector('.sp-cat-name');
                 name.value = cat.label;
                 name.size = Math.max(3, cat.label.length);
@@ -901,6 +898,7 @@ const Slop = (() => {
                     touched();
                 });
                 name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
+                if (!cat.builtin) name.addEventListener('focus', () => about(cat.id));
                 row.querySelector('.sp-cat-x')?.addEventListener('click', () => {
                     withUndo(`Deleted "${cat.label}"`, () => {
                         entries().forEach(([p, v]) => set(p, reattribute(v, cat.id, 'ai')));
@@ -920,25 +918,27 @@ const Slop = (() => {
                 add.replaceWith(input);
                 input.focus();
                 let finished = false;
+                let made = null;
                 const done = (keep) => {
                     if (finished) return;
                     finished = true;
                     const label = input.value.trim();
                     if (keep && label) {
-                        const id = slug(label);
+                        made = slug(label);
                         const color = PALETTE[categories().filter((c) => !c.builtin).length % PALETTE.length];
-                        Object.assign(own(id), { label, color });
+                        Object.assign(own(made), { label, color });
                         applyColors();
                         touched();
                     }
                     render();
+                    if (made) about(made, true); // whose words they are, next
                 };
                 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
                 input.addEventListener('blur', () => done(true), { once: true });
             });
             box.append(add);
             // every picked color back to the default, in one undoable step. Shown while there's one (numbers())
-            const back = el('button', 'sp-cat-add sp-cat-revert', 'Revert colors');
+            const back = el('button', 'sp-cat-revert', 'Revert colors');
             back.type = 'button';
             back.title = 'Every category back to its default color';
             back.addEventListener('click', () => {
@@ -947,6 +947,188 @@ const Slop = (() => {
                 render();
             });
             box.append(back);
+            if (aboutOpen && text._categories?.[aboutOpen]) about(aboutOpen);
+            // what an agent marked, for the author to keep or undo
+            Object.entries(text._categories ?? {}).forEach(([id, c]) => {
+                const before = c.found?.before;
+                if (!before || !Object.keys(before).length) return;
+                const n = Object.keys(before).length;
+                const label = categories().find((x) => x.id === id)?.label ?? id;
+                const note = el('p', 'sp-found', `${esc(`An agent marked ${count(n, 'text')} as ${label}${c.found.on ? ` on ${day(c.found.on)}` : ''}`)} · `);
+                note.dataset.id = id;
+                const keep = el('button', 'sp-link', 'Keep');
+                keep.type = 'button';
+                keep.title = 'Keep what the agent marked';
+                keep.addEventListener('click', () => { withUndo(`Kept the agent's marks for ${label}`, () => { delete c.found.before; }); render(); });
+                const undoBtn = el('button', 'sp-link', 'Undo');
+                undoBtn.type = 'button';
+                undoBtn.title = 'Give those texts back to whoever had them before (texts whose words changed since stay as they are)';
+                undoBtn.addEventListener('click', () => {
+                    withUndo(`Undid the agent's marks for ${label}`, () => {
+                        Object.entries(before).forEach(([p, was]) => {
+                            const now = valueAt(text, p);
+                            if (now !== undefined && plain(now) === plain(was)) set(p, was);
+                        });
+                        delete c.found;
+                    });
+                    render();
+                });
+                note.append(keep, ' · ', undoBtn);
+                box.append(note);
+            });
+        }
+        const day = (iso) => { const d = new Date(`${iso}T12:00:00`); return Number.isNaN(+d) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+
+        /* whose words a category means, and whether an agent should find them: under the categories while open */
+        let aboutOpen = null;
+        function about(id, focus) {
+            aboutOpen = id;
+            const box = $('.sp-cats');
+            box.querySelector('.sp-about')?.remove();
+            const c = own(id);
+            const label = () => c.label || id;
+            const panel = el('div', 'sp-about', `<label class="sp-about-q" for="sp-about-${esc(id)}"></label>`
+                + `<textarea id="sp-about-${esc(id)}" rows="2" spellcheck="true" placeholder="Who wrote them, or where they come from"></textarea>`
+                + '<div class="sp-about-row"><label class="sp-check"><input type="checkbox"> Ask an agent to find them</label><button type="button" class="sp-link sp-about-done">Done</button></div>'
+                + '<p class="sp-about-note"></p>');
+            panel.dataset.id = id;
+            panel.querySelector('.sp-about-q').textContent = `Whose words are ${label()}?`;
+            const desc = panel.querySelector('textarea');
+            const ask = panel.querySelector('input[type="checkbox"]');
+            const note = panel.querySelector('.sp-about-note');
+            desc.value = c.about ?? '';
+            ask.checked = !!c.find;
+            const paint = () => {
+                note.innerHTML = '';
+                if (c.find) {
+                    note.append('Waiting for an agent: it finds them the next time one works on this page, once you save. ');
+                    const copy = el('button', 'sp-link', 'Copy a prompt');
+                    copy.type = 'button';
+                    copy.title = 'To ask an agent now';
+                    copy.addEventListener('click', () => {
+                        const page = decodeURIComponent(location.pathname.split('/').pop() || '') || 'this page';
+                        const prompt = `In ${page}, find the words that belong to the slop-editor category "${label()}"${c.about ? ` (${c.about})` : ''} and mark them, following the slop-editor skill's "Categories to find".`;
+                        Promise.resolve(navigator.clipboard?.writeText(prompt)).then(() => status('Prompt copied')).catch(() => status("Couldn't copy the prompt", 'error'));
+                    });
+                    note.append(copy);
+                } else if (c.found?.on) note.append(`Found by an agent · ${day(c.found.on)}`);
+                note.hidden = !note.childNodes.length;
+            };
+            desc.addEventListener('input', () => {
+                if (desc.value.trim()) c.about = desc.value.trim(); else delete c.about;
+                touched();
+            });
+            ask.addEventListener('change', () => {
+                if (ask.checked) c.find = true; else delete c.find;
+                paint();
+                touched();
+            });
+            panel.querySelector('.sp-about-done').addEventListener('click', () => { aboutOpen = null; panel.remove(); });
+            paint();
+            box.querySelector('.sp-found') ? box.querySelector('.sp-found').before(panel) : box.append(panel);
+            if (focus) desc.focus();
+        }
+
+        /* drag a category's dot onto the page to take a color from it: the point is a ring, and the color shows in a
+           circle beside it, joined by a line, so the pointer never hides it. A click still opens the browser's picker */
+        function dragColor(dot, pick) {
+            let dragged = false; // the click that ends a drag mustn't open the picker
+            dot.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); dragged = false; } });
+            dot.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                dragged = false;
+                const x0 = e.clientX;
+                const y0 = e.clientY;
+                let lens = null;
+                let color = null;
+                const move = (ev) => {
+                    if (!lens) {
+                        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+                        lens = sampler();
+                        dot.setPointerCapture(ev.pointerId);
+                    }
+                    color = colorAt(ev.clientX, ev.clientY);
+                    lens.show(ev.clientX, ev.clientY, color);
+                };
+                let cancelled = false;
+                const up = (ev) => {
+                    removeEventListener('pointermove', move, true);
+                    removeEventListener('pointerup', up, true);
+                    removeEventListener('keydown', esc, true);
+                    if (!lens) return;
+                    lens.remove();
+                    dragged = true;
+                    ev.preventDefault();
+                    if (!cancelled && color) pick(color);
+                };
+                // Escape drops it: the color stays as it was
+                const esc = (ev) => {
+                    if (ev.key !== 'Escape' || !lens) return;
+                    ev.preventDefault();
+                    cancelled = true;
+                    lens.remove();
+                    removeEventListener('pointermove', move, true);
+                };
+                addEventListener('pointermove', move, true);
+                addEventListener('pointerup', up, true);
+                addEventListener('keydown', esc, true);
+            });
+        }
+        function sampler() {
+            const lens = el('div', 'slop-sampler', '<svg aria-hidden="true"><line></line></svg><i class="slop-sampler-ring"></i><b class="slop-sampler-lens"></b><span class="slop-sampler-hex"></span>');
+            document.body.append(lens);
+            document.documentElement.classList.add('slop-sampling');
+            const [line, ring, big, label] = ['line', '.slop-sampler-ring', '.slop-sampler-lens', '.slop-sampler-hex'].map((q) => lens.querySelector(q));
+            return {
+                show(x, y, color) {
+                    // the circle up and to the right of the point, or wherever there's room
+                    const cx = x + (x > innerWidth - 90 ? -46 : 46);
+                    const cy = y + (y < 90 ? 46 : -46);
+                    Object.assign(ring.style, { left: `${x}px`, top: `${y}px` });
+                    Object.assign(big.style, { left: `${cx}px`, top: `${cy}px`, background: color ?? 'transparent' });
+                    Object.assign(label.style, { left: `${cx}px`, top: `${cy + 30}px` });
+                    label.textContent = color ?? '';
+                    [['x1', x], ['y1', y], ['x2', cx], ['y2', cy]].forEach(([k, v]) => line.setAttribute(k, v));
+                },
+                remove() { lens.remove(); document.documentElement.classList.remove('slop-sampling'); },
+            };
+        }
+        // the color on the page at a point: a letter's color over a letter, a shape's fill, an image's pixel (when the
+        // browser lets it be read), or else the first background that isn't see-through
+        function colorAt(x, y) {
+            const els = document.elementsFromPoint(x, y);
+            const top = els[0];
+            if (!top) return null;
+            const seen = (c) => { const m = /rgba?\([^)]*?([\d.]+)\)$/.exec(c); return c && c !== 'transparent' && !(c.startsWith('rgba') && m && +m[1] === 0); };
+            if (top instanceof HTMLImageElement || top instanceof HTMLCanvasElement) {
+                try {
+                    const r = top.getBoundingClientRect();
+                    const w = top.naturalWidth ?? top.width;
+                    const h = top.naturalHeight ?? top.height;
+                    const c = Object.assign(document.createElement('canvas'), { width: 1, height: 1 }).getContext('2d');
+                    c.drawImage(top, ((x - r.left) / r.width) * w, ((y - r.top) / r.height) * h, 1, 1, 0, 0, 1, 1);
+                    const [rr, g, b, a] = c.getImageData(0, 0, 1, 1).data;
+                    if (a) return hex(`rgb(${rr}, ${g}, ${b})`);
+                } catch { /* another site's image: its pixels can't be read */ }
+            }
+            const caret = document.caretRangeFromPoint?.(x, y) ?? (() => { const p = document.caretPositionFromPoint?.(x, y); if (!p) return null; const r = document.createRange(); r.setStart(p.offsetNode, p.offset); return r; })();
+            const node = caret?.startContainer;
+            if (node?.nodeType === 3 && top.contains(node)) {
+                for (const i of [caret.startOffset - 1, caret.startOffset]) {
+                    if (i < 0 || i >= node.length || !node.data[i].trim()) continue;
+                    const r = document.createRange();
+                    r.setStart(node, i);
+                    r.setEnd(node, i + 1);
+                    const b = r.getBoundingClientRect();
+                    if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return hex(getComputedStyle(node.parentElement).color);
+                }
+            }
+            if (top instanceof SVGElement && seen(getComputedStyle(top).fill)) return hex(getComputedStyle(top).fill);
+            for (const e of els) {
+                const bg = getComputedStyle(e).backgroundColor;
+                if (seen(bg)) return hex(bg);
+            }
+            return hex(getComputedStyle(document.documentElement).backgroundColor) || '#ffffff';
         }
 
         // a category's own color, or (null) its default
@@ -1138,7 +1320,6 @@ const Slop = (() => {
             withUndo('Added a paragraph', () => insert(group, after, key, ''));
             show('all', `${group}.${key}`);
         }
-        const DROPPER = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.2 2.6l3.2 3.2M11.8 4.2l-7.3 7.3-2.3.8.8-2.3 7.3-7.3M9 4.6l2.4 2.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
         const TRASH = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 4.5h11M6.2 4.5V2.8h3.6v1.7M4 4.5l.7 8.7h6.6l.7-8.7M6.7 7v4M9.3 7v4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
         // a class on the page's elements for a text (`last`: only the last of them), off everything else
         const FLAGS = ['slop-insert-after', 'slop-remove-hint', 'slop-removing'];

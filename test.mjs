@@ -159,6 +159,27 @@ test('edit: a page that inlines old code gets the current code; one that links i
     }
 });
 
+test('pending: categories the user asked an agent to find, and the session hook\'s context', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-pending-'));
+    const cats = { bob: { label: 'Bob', about: 'My co-author: the methods section', find: true }, sue: { label: 'Sue' } };
+    await writeFile(path.join(dir, 'page.html'), `<p>hi</p><script type="application/json" id="slop-text">${JSON.stringify({ version: 1, _categories: cats })}</script>`);
+    await mkdir(path.join(dir, 'src'));
+    await writeFile(path.join(dir, 'src', 'text.json'), JSON.stringify({ version: 3, _categories: { ann: { find: true } } }));
+    await mkdir(path.join(dir, 'node_modules'));
+    await writeFile(path.join(dir, 'node_modules', 'x.json'), JSON.stringify({ version: 1, _categories: { no: { find: true } } }));
+    const run = (...a) => execFileSync(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'pending', ...a], { cwd: dir, encoding: 'utf8' });
+    const out = run();
+    assert.match(out, /page\.html: "Bob" \(id `bob`\): My co-author: the methods section/);
+    assert.match(out, /src\/text\.json: "ann"/);
+    assert.ok(!/Sue|node_modules/.test(out));
+    const hook = JSON.parse(run('--hook'));
+    assert.equal(hook.hookSpecificOutput.hookEventName, 'SessionStart');
+    assert.match(hook.hookSpecificOutput.additionalContext, /"Bob"[\s\S]*Categories to find/);
+    await writeFile(path.join(dir, 'page.html'), '<p>no block</p>');
+    await writeFile(path.join(dir, 'src', 'text.json'), '{}');
+    assert.equal(run('--hook'), ''); // nothing waiting: nothing said
+});
+
 test('history: what each commit did to who wrote what', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'slop-history-'));
     const page = path.join(dir, 'page.html');

@@ -328,24 +328,106 @@ try {
         assert.ok(chips.length > 2 && descending(chips), String(chips));
     });
 
-    await check('a category\'s color: the browser\'s picker, an eyedropper joined to its right, and Revert colors', async () => {
+    await check('a category\'s color: the browser\'s picker, or drag its dot onto the page; Revert colors', async () => {
         const color = () => p.evaluate(() => Slop.text._categories?.ai?.color);
         await p.locator('.sp-cat[data-id="ai"] input[type="color"]').fill('#2b9fc0');
         assert.equal(await color(), '#2b9fc0');
         assert.equal(await p.$eval('.sp-cat[data-id="ai"] .sp-swatch', (x) => getComputedStyle(x).backgroundColor), 'rgb(43, 159, 192)');
-        // the eyedropper, with the browser's stood in for: it takes a color from anywhere on the screen
-        await p.evaluate(() => { window.EyeDropper = class { open() { return Promise.resolve({ sRGBHex: '#d4469a' }); } }; });
-        await p.click('.sp-tabs [data-tab="all"]'); // a redraw, now that the browser "has" one
-        const [dot, dropper] = await p.$$eval('.sp-cat[data-id="ai"] .sp-swatch, .sp-cat[data-id="ai"] .sp-dropper', (xs) => xs.map((x) => x.getBoundingClientRect()));
-        assert.ok(Math.abs(dropper.left - dot.right) < 4 && Math.abs(dropper.top + dropper.height / 2 - (dot.top + dot.height / 2)) < 2); // joined, on its right
-        await p.click('.sp-cat[data-id="ai"] .sp-dropper');
-        await p.waitForFunction(() => Slop.text._categories?.ai?.color === '#d4469a');
-        assert.equal(await p.$eval('.sp-cat[data-id="ai"] input[type="color"]', (x) => x.value), '#d4469a');
+        // drag the dot onto a color on the page: the ring is at the point, the color in a circle beside it, joined by a line
+        await p.evaluate(() => {
+            document.body.insertAdjacentHTML('beforeend', '<div id="paint" style="position:fixed;left:20px;top:300px;width:80px;height:80px;background:#123456"></div>'
+                + '<span id="ink" style="position:fixed;left:20px;top:420px;font:60px/1 sans-serif;color:#aa0000">WW</span>');
+        });
+        const dot = await (await p.$('.sp-cat[data-id="ai"] .sp-swatch')).boundingBox();
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(200, 200, { steps: 4 });
+        await p.mouse.move(60, 340, { steps: 4 });
+        const lens = await p.$eval('.slop-sampler', (s) => {
+            const at = (q) => { const r = s.querySelector(q).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+            const line = s.querySelector('line');
+            return { ring: at('.slop-sampler-ring'), lens: at('.slop-sampler-lens'), fill: getComputedStyle(s.querySelector('.slop-sampler-lens')).backgroundColor, hex: s.querySelector('.slop-sampler-hex').textContent, line: ['x1', 'y1', 'x2', 'y2'].map((k) => +line.getAttribute(k)) };
+        });
+        assert.deepEqual(lens.ring.map(Math.round), [60, 340]);
+        assert.ok(Math.hypot(lens.lens[0] - 60, lens.lens[1] - 340) > 40, 'the circle is beside the point, not over it');
+        assert.deepEqual(lens.line.map(Math.round), [60, 340, ...lens.lens.map(Math.round)]);
+        assert.equal(lens.fill, 'rgb(18, 52, 86)');
+        assert.equal(lens.hex, '#123456');
+        await p.mouse.up();
+        assert.equal(await color(), '#123456');
+        assert.equal(await p.$('.slop-sampler'), null);
+        // over a letter, the letter's color
+        const ink = await (await p.$('#ink')).boundingBox();
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(ink.x + 22, ink.y + ink.height / 2, { steps: 6 });
+        await p.mouse.up();
+        assert.equal(await color(), '#aa0000');
+        // Escape drops it
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(60, 340, { steps: 4 });
+        await p.keyboard.press('Escape');
+        await p.mouse.up();
+        assert.equal(await color(), '#aa0000');
+        await p.evaluate(() => { document.getElementById('paint').remove(); document.getElementById('ink').remove(); });
+        // Revert colors: grey, no outline
+        assert.deepEqual(await p.$eval('.sp-cat-revert', (x) => [getComputedStyle(x).borderTopStyle, getComputedStyle(x).backgroundColor]), ['none', 'rgba(0, 0, 0, 0)']);
         await p.click('.sp-cat-revert');
         assert.equal(await color(), undefined);
         assert.ok(await p.$eval('.sp-cat-revert', (x) => x.hidden));
         await p.click('.sp-status .sp-link'); // Undo
-        assert.equal(await color(), '#d4469a');
+        assert.equal(await color(), '#aa0000');
+    });
+
+    await check('a new category asks whose words they are, and can ask an agent to find them', async () => {
+        await p.click('.sp-cat-add');
+        await p.keyboard.type('Bob');
+        await p.keyboard.press('Enter');
+        await p.waitForSelector('.sp-about');
+        assert.match(await p.textContent('.sp-about-q'), /Whose words are Bob\?/);
+        assert.ok(await p.$eval('.sp-about textarea', (x) => document.activeElement === x));
+        await p.keyboard.type('My co-author: the methods section');
+        const bob = () => p.evaluate(() => Slop.text._categories.bob);
+        assert.equal((await bob()).about, 'My co-author: the methods section');
+        assert.ok(await p.$eval('.sp-about-note', (x) => x.hidden));
+        await p.click('.sp-check');
+        assert.equal((await bob()).find, true);
+        assert.match(await p.textContent('.sp-about-note'), /Waiting for an agent/);
+        await p.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.copied = t; } }, configurable: true }));
+        await p.click('.sp-about-note .sp-link');
+        await p.waitForFunction(() => window.copied);
+        assert.match(await p.evaluate(() => window.copied), /"Bob" \(My co-author: the methods section\)[\s\S]*Categories to find/);
+        assert.match(await p.textContent('.sp-status'), /Prompt copied/);
+        await p.click('.sp-about-done');
+        assert.equal(await p.$('.sp-about'), null);
+        await p.click('.sp-cat[data-id="bob"] .sp-cat-name'); // its name opens it again
+        assert.equal(await p.inputValue('.sp-about textarea'), 'My co-author: the methods section');
+        await p.click('.sp-about-done');
+    });
+
+    await check('what an agent marked waits for Keep or Undo', async () => {
+        const mark = () => p.evaluate(() => {
+            const was = Slop.get('how.p1');
+            Slop.set('how.p1', [{ bob: 'The agent wrote this.' }]);
+            const bob = Slop.text._categories.bob;
+            delete bob.find;
+            bob.found = { on: '2026-11-25', before: { 'how.p1': was } };
+            Slop.refresh();
+            return was;
+        });
+        const was = await mark();
+        assert.match(await p.textContent('.sp-found'), /An agent marked 1 text as Bob on Nov 25/);
+        await p.click('.sp-found .sp-link:text("Undo")');
+        assert.deepEqual(await get(p, 'how.p1'), was);
+        assert.equal(await p.evaluate(() => Slop.text._categories.bob.found), undefined);
+        assert.equal(await p.$('.sp-found'), null);
+        await mark();
+        await p.click('.sp-found .sp-link:text("Keep")');
+        assert.deepEqual(await get(p, 'how.p1'), [{ bob: 'The agent wrote this.' }]);
+        assert.deepEqual(await p.evaluate(() => Slop.text._categories.bob.found), { on: '2026-11-25' });
+        await p.click('.sp-cat[data-id="bob"] .sp-cat-name');
+        assert.match(await p.textContent('.sp-about-note'), /Found by an agent · Nov 25/);
     });
     await p.close();
 
