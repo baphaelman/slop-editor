@@ -38,6 +38,24 @@ const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>
   Slop.start(location.protocol === 'file:' ? { edit: 'local' } : {});
 </script></body></html>`;
 
+// lists the page didn't mark: one that is, scroll steps (data-b), paragraphs in two parents, and one opted out
+const LISTS = {
+    version: 1,
+    auto: { title: 'Unmarked', p1: 'One.', p2: 'Two.' },
+    steps: { p1: 'Step one.', p2: 'Step two.' },
+    split: { p1: 'Here.', p2: 'There.' },
+    off: { p1: 'Off one.', p2: 'Off two.' },
+};
+const listsPage = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>Lists</title>
+<link rel="stylesheet" href="slop.css"></head><body style="font: 16px Georgia; max-width: 600px; margin: 40px auto">
+<div id="auto"><h2 data-slop="auto.title"></h2><p class="lede" data-slop="auto.p1"></p><p class="lede" data-slop="auto.p2"></p><aside>Not a text.</aside></div>
+<div id="steps"><p data-b="0" data-slop="steps.p1"></p><p data-b="1" data-slop="steps.p2"></p></div>
+<div><p data-slop="split.p1"></p></div><div><p data-slop="split.p2"></p></div>
+<div id="off" data-slop-list="off"><p data-slop="off.p1"></p><p data-slop="off.p2"></p></div>
+<script type="application/json" id="slop-text">\n${JSON.stringify(text, null, 2)}\n</script>
+<script src="slop.js"></script>
+<script>Slop.start({ edit: 'local' });</script></body></html>`;
+
 async function fixture() {
     const dir = await mkdtemp(path.join(tmpdir(), 'slop-editor-'));
     await Promise.all(['slop.js', 'slop.css'].map((f) => copyFile(path.join(here, f), path.join(dir, f))));
@@ -300,7 +318,261 @@ try {
         assert.deepEqual(await p.$$eval('#list > *', (xs) => xs.map((x) => x.dataset.slop ?? x.id)), ['list.title', 'list.p1', 'list.p2', 'list.p3', 'aside']);
         assert.equal(await p.$$eval(`${field('list.title')} .sp-trash, ${field('list.title')} .sp-insert`, (xs) => xs.length), 0);
     });
+
+    await check('the legend and the editor\'s categories list the biggest share first', async () => {
+        const shares = (sel) => p.$$eval(sel, (xs) => xs.map((x) => (/(<?)(\d+)%/.exec(x.textContent) ?? [0, '', '0']).slice(1)).map(([lt, n]) => (lt ? 0.5 : +n)));
+        const descending = (xs) => xs.every((x, i) => !i || xs[i - 1] >= x);
+        const legend = await shares('body > [data-slop-meter] .slop-key');
+        assert.ok(legend.length > 1 && descending(legend), String(legend));
+        const chips = await shares('.sp-cat .sp-cat-pct');
+        assert.ok(chips.length > 2 && descending(chips), String(chips));
+    });
+
+    await check('a category\'s color: its picker and eyedropper, or drag its dot onto the page; Revert colors', async () => {
+        const color = () => p.evaluate(() => Slop.text._categories?.ai?.color);
+        // the picker: a rectangle of shades, the eyedropper, the color and a hue bar, then its numbers
+        await p.click('.sp-cat[data-id="ai"] .sp-swatch');
+        assert.ok(await p.isVisible('.sp-pick'));
+        const sv = await (await p.$('.sp-pick-sv')).boundingBox();
+        await p.mouse.click(sv.x + sv.width - 14, sv.y + 14); // near the top right: the hue, nearly full
+        assert.match(await color(), /^#[0-9a-f]{6}$/);
+        await p.fill('.sp-pick-num input >> nth=0', '43');
+        await p.fill('.sp-pick-num input >> nth=1', '159');
+        await p.fill('.sp-pick-num input >> nth=2', '192');
+        assert.equal(await color(), '#2b9fc0');
+        assert.equal(await p.$eval('.sp-cat[data-id="ai"] .sp-swatch', (x) => getComputedStyle(x).backgroundColor), 'rgb(43, 159, 192)');
+        await p.click('.sp-pick-swap');
+        assert.equal(await p.inputValue('.sp-pick-num input'), '#2b9fc0'); // HEX
+        await p.fill('.sp-pick-num input', '#336699');
+        assert.equal(await color(), '#336699');
+        await p.click('.sp-pick-swap'); // HSL
+        assert.deepEqual(await p.$$eval('.sp-pick-num span', (xs) => xs.map((x) => x.textContent)), ['H', 'S', 'L']);
+        await p.click('.sp-pick-swap'); // back to RGB
+        // its eyedropper: the magnifier follows the pointer, beside it, until a click takes the color
+        await p.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div id="paint2" style="position:fixed;left:20px;top:500px;width:80px;height:80px;background:#654321"></div>'));
+        await p.click('.sp-pick-drop');
+        await p.mouse.move(60, 540, { steps: 4 });
+        assert.ok(await p.isVisible('.slop-sampler'));
+        const away = await p.$eval('.slop-sampler-lens', (x) => { const r = x.getBoundingClientRect(); return Math.hypot(r.left + r.width / 2 - 60, r.top + r.height / 2 - 540) > r.width / 2; });
+        assert.ok(away, 'the magnifier is beside the pointer');
+        await p.mouse.click(60, 540);
+        assert.equal(await color(), '#654321');
+        assert.equal(await p.$('.slop-sampler'), null);
+        assert.ok(await p.isVisible('.sp-pick')); // still open, showing it
+        assert.deepEqual(await p.$$eval('.sp-pick-num input', (xs) => xs.map((x) => x.value)), ['101', '67', '33']);
+        await p.keyboard.press('Escape');
+        assert.equal(await p.$('.sp-pick'), null);
+        await p.evaluate(() => document.getElementById('paint2').remove());
+        // drag the dot onto a color on the page: the ring is at the point, the color in a circle beside it, joined by a line
+        await p.evaluate(() => {
+            document.body.insertAdjacentHTML('beforeend', '<div id="paint" style="position:fixed;left:20px;top:300px;width:80px;height:80px;background:#123456"></div>'
+                + '<span id="ink" style="position:fixed;left:20px;top:420px;font:60px/1 sans-serif;color:#aa0000">WW</span>');
+        });
+        const dot = await (await p.$('.sp-cat[data-id="ai"] .sp-swatch')).boundingBox();
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(200, 200, { steps: 4 });
+        await p.mouse.move(60, 340, { steps: 4 });
+        const lens = await p.$eval('.slop-sampler', (s) => {
+            const rect = (q) => s.querySelector(q).getBoundingClientRect();
+            const mid = (r) => [r.left + r.width / 2, r.top + r.height / 2];
+            const big = rect('.slop-sampler-lens');
+            const line = s.querySelector('line');
+            const seen = s.querySelector('.slop-sampler-page #paint').getBoundingClientRect(); // the magnified copy of what's under the point
+            return { ring: mid(rect('.slop-sampler-ring')), lens: mid(big), r: big.width / 2, rim: getComputedStyle(s.querySelector('.slop-sampler-lens')).borderTopColor, hex: s.querySelector('.slop-sampler-hex').textContent,
+                line: ['x1', 'y1', 'x2', 'y2'].map((k) => +line.getAttribute(k)), seen: [seen.left, seen.top, seen.width] };
+        });
+        assert.deepEqual(lens.ring.map(Math.round), [60, 340]);
+        // beside the point, clear of it
+        assert.ok(Math.hypot(lens.lens[0] - 60, lens.lens[1] - 340) > lens.r + 20, 'the magnifier is beside the point, not over it');
+        assert.deepEqual(lens.line.slice(0, 2).map(Math.round), [60, 340]);
+        assert.ok(Math.abs(Math.hypot(lens.line[2] - lens.lens[0], lens.line[3] - lens.lens[1]) - lens.r) < 6, 'the line reaches its rim');
+        // it shows the page around the point, three times bigger: the 80px square under it, now 240px, around its middle
+        assert.equal(Math.round(lens.seen[2]), 240);
+        assert.ok(lens.seen[0] < lens.lens[0] && lens.seen[0] + 240 > lens.lens[0] && lens.seen[1] < lens.lens[1] && lens.seen[1] + 240 > lens.lens[1]);
+        assert.equal(Math.round(lens.lens[0] - lens.seen[0]), 40 * 3); // (60 - 20) px into the square
+        assert.equal(lens.rim, 'rgb(18, 52, 86)');
+        assert.equal(lens.hex, '#123456');
+        await p.mouse.up();
+        assert.equal(await color(), '#123456');
+        assert.equal(await p.$('.slop-sampler'), null);
+        // over a letter, the letter's color
+        const ink = await (await p.$('#ink')).boundingBox();
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(ink.x + 22, ink.y + ink.height / 2, { steps: 6 });
+        await p.mouse.up();
+        assert.equal(await color(), '#aa0000');
+        // Escape drops it
+        await p.mouse.move(dot.x + 9, dot.y + 9);
+        await p.mouse.down();
+        await p.mouse.move(60, 340, { steps: 4 });
+        await p.keyboard.press('Escape');
+        await p.mouse.up();
+        assert.equal(await color(), '#aa0000');
+        await p.evaluate(() => { document.getElementById('paint').remove(); document.getElementById('ink').remove(); });
+        // Revert colors: grey, no outline
+        assert.deepEqual(await p.$eval('.sp-cat-revert', (x) => [getComputedStyle(x).borderTopStyle, getComputedStyle(x).backgroundColor]), ['none', 'rgba(0, 0, 0, 0)']);
+        await p.click('.sp-cat-revert');
+        assert.equal(await color(), undefined);
+        assert.ok(await p.$eval('.sp-cat-revert', (x) => x.hidden));
+        await p.click('.sp-status .sp-link'); // Undo
+        assert.equal(await color(), '#aa0000');
+    });
+
+    await check('a new category asks whose words they are, and can ask an agent to find them', async () => {
+        await p.click('.sp-cat-add');
+        await p.keyboard.type('Bob');
+        await p.keyboard.press('Enter');
+        await p.waitForSelector('.sp-about');
+        assert.match(await p.textContent('.sp-about-q'), /Whose words are Bob\?/);
+        assert.ok(await p.$eval('.sp-about textarea', (x) => document.activeElement === x));
+        await p.keyboard.type('My co-author: the methods section');
+        const bob = () => p.evaluate(() => Slop.text._categories.bob);
+        assert.equal((await bob()).about, 'My co-author: the methods section');
+        assert.ok(await p.$eval('.sp-about-note', (x) => x.hidden));
+        await p.click('.sp-check');
+        assert.equal((await bob()).find, true);
+        assert.match(await p.textContent('.sp-about-note'), /Waiting for an agent/);
+        await p.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (t) => { window.copied = t; } }, configurable: true }));
+        await p.click('.sp-about-note .sp-link');
+        await p.waitForFunction(() => window.copied);
+        assert.match(await p.evaluate(() => window.copied), /"Bob" \(My co-author: the methods section\)[\s\S]*Categories to find/);
+        assert.match(await p.textContent('.sp-status'), /Prompt copied/);
+        await p.click('.sp-about-done');
+        assert.equal(await p.$('.sp-about'), null);
+        await p.click('.sp-cat[data-id="bob"] .sp-cat-pct'); // selecting it opens it again
+        assert.equal(await p.inputValue('.sp-about textarea'), 'My co-author: the methods section');
+        assert.ok(await p.$eval('.sp-cat[data-id="bob"]', (x) => x.classList.contains('sp-cat-on')));
+        // a built-in category has a description too; an agent can find facts and quotes, never the author's words
+        const unsaved = await p.textContent('.sp-save');
+        await p.click('.sp-cat[data-id="me"] .sp-cat-pct');
+        assert.match(await p.textContent('.sp-about-q'), /Whose words are My words\?/);
+        assert.ok(await p.$eval('.sp-about .sp-check', (x) => x.hidden));
+        assert.equal(await p.textContent('.sp-save'), unsaved); // opening it changes nothing
+        await p.fill('.sp-about textarea', 'Mine, typed or dictated');
+        assert.equal(await p.evaluate(() => Slop.text._categories.me.about), 'Mine, typed or dictated');
+        await p.fill('.sp-about textarea', '');
+        assert.equal(await p.evaluate(() => Slop.text._categories.me), undefined);
+        await p.click('.sp-cat[data-id="data"] .sp-cat-pct');
+        assert.ok(await p.$eval('.sp-about .sp-check', (x) => !x.hidden));
+        await p.click('.sp-about-done');
+        assert.equal(await p.$('.sp-cat-on'), null);
+    });
+
+    await check('what an agent marked waits for Keep or Undo', async () => {
+        const mark = () => p.evaluate(() => {
+            const was = Slop.get('how.p1');
+            Slop.set('how.p1', [{ bob: 'The agent wrote this.' }]);
+            const bob = Slop.text._categories.bob;
+            delete bob.find;
+            bob.found = { on: '2026-11-25', before: { 'how.p1': was } };
+            Slop.refresh();
+            return was;
+        });
+        const was = await mark();
+        assert.match(await p.textContent('.sp-found'), /An agent marked 1 text as Bob on Nov 25/);
+        await p.click('.sp-found .sp-link:text("Undo")');
+        assert.deepEqual(await get(p, 'how.p1'), was);
+        assert.equal(await p.evaluate(() => Slop.text._categories.bob.found), undefined);
+        assert.equal(await p.$('.sp-found'), null);
+        await mark();
+        await p.click('.sp-found .sp-link:text("Keep")');
+        assert.deepEqual(await get(p, 'how.p1'), [{ bob: 'The agent wrote this.' }]);
+        assert.deepEqual(await p.evaluate(() => Slop.text._categories.bob.found), { on: '2026-11-25' });
+        await p.click('.sp-cat[data-id="bob"] .sp-cat-name');
+        assert.match(await p.textContent('.sp-about-note'), /Found by an agent · Nov 25/);
+    });
     await p.close();
+
+    // ---------- the browser editor after the author publishes a new version ----------
+    const republished = await fixture();
+    p = await open(`file://${republished}`);
+    await check('edits saved in the browser survive a new version: the author\'s changes win, the rest stays', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        for (const at of ['how.p1', 'how.title']) {
+            const ta = p.locator(`${field(at)} textarea`);
+            await ta.click();
+            await ta.press('End');
+            await p.keyboard.type(' Mine.');
+        }
+        await p.click('.sp-save');
+        assert.equal(await p.textContent('.sp-save'), 'Saved');
+        const next = JSON.parse(JSON.stringify(FIXTURE));
+        Object.assign(next, { version: 2 });
+        next.how.title = 'How it all works';
+        next.list.p3 = 'Third, new.';
+        await writeFile(republished, page(next));
+        await p.reload();
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: ' Mine.' }]);
+        assert.equal(await get(p, 'how.title'), 'How it all works');
+        assert.equal(await get(p, 'list.p3'), 'Third, new.');
+        assert.equal(await p.evaluate(() => Slop.text.version), 2);
+        assert.deepEqual(await p.$$eval('#list > p', (xs) => xs.map((x) => x.textContent)), ['First item.', 'Second, all mine.', 'Third, new.']);
+        assert.equal(await p.textContent('.sp-save'), 'Saved');
+    });
+    await check('a copy saved without the page it was based on (before 0.4) is dropped on a new version', async () => {
+        await p.evaluate((key) => localStorage.setItem(key, JSON.stringify({ base: 1, text: { version: 1, how: { p1: 'Old copy.' } } })), `slop-text:${new URL(`file://${republished}`).pathname}`);
+        await p.reload();
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+    await check('a save the browser refuses says so', async () => {
+        await p.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('blocked'); }; });
+        await p.click('.slop-edit-btn');
+        await all(p);
+        await p.click(`${field('how.p1')} .sp-toggle`);
+        await p.click('.sp-save');
+        assert.equal(await p.textContent('.sp-status'), "Couldn't save in this browser");
+        assert.match(await p.textContent('.sp-save'), /^Save 1/);
+    });
+    await p.close();
+
+    // ---------- lists without marking ----------
+    const lists = await fixture();
+    await writeFile(lists, listsPage(LISTS));
+    p = await open(`file://${lists}`);
+    await check('a group\'s paragraphs in alike elements with one parent are a list without marking', async () => {
+        await p.click('.slop-edit-btn');
+        await all(p);
+        const plus = (at) => p.$$eval(`${field(at)} .sp-insert`, (xs) => xs.length);
+        assert.equal(await plus('auto.p1'), 1);
+        assert.equal(await plus('auto.title'), 0);
+        // scroll steps (data-b="0", "1"), paragraphs in two parents, and data-slop-list="off" aren't lists
+        for (const at of ['steps.p1', 'split.p1', 'off.p1']) assert.equal(await plus(at), 0, at);
+        assert.match(await p.textContent(`${field('auto.p2')} .sp-flabel`), /Paragraph 2/);
+        await p.click(`${field('auto.p1')} .sp-insert`);
+        await p.keyboard.insertText('Added.');
+        const shown = () => p.$$eval('#auto > *', (xs) => xs.map((x) => `${x.tagName}.${[...x.classList].filter((c) => !c.startsWith('slop-')).join(' ')}:${x.textContent}`));
+        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
+        await p.click('.sp-save');
+        // the page still has two of them; the saved one is drawn in its place
+        await p.reload();
+        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
+        assert.equal(await p.$$eval('#steps > p, #off > p', (xs) => xs.length), 4);
+    });
+    await p.close();
+
+    // ---------- a page that names where its copy is saved (a host that gives each version its own address) ----------
+    await check('with Slop.start({key}), edits saved in the browser follow the page to a new address', async () => {
+        const named = (text) => listsPage(text).replace("Slop.start({ edit: 'local' })", "Slop.start({ edit: 'local', key: 'lists-page' })");
+        const first = await fixture();
+        await writeFile(first, named(LISTS));
+        p = await open(`file://${first}`);
+        await p.click('.slop-edit-btn');
+        await all(p);
+        await p.click(`${field('auto.title')} .sp-toggle`);
+        await p.click('.sp-save');
+        assert.ok(await p.evaluate(() => localStorage.getItem('slop-text:lists-page') !== null));
+        const moved = await fixture(); // another folder: another path, in the same browser
+        await writeFile(moved, named({ ...LISTS, version: 2, auto: { ...LISTS.auto, p3: 'Three.' } }));
+        await p.goto(`file://${moved}`);
+        assert.deepEqual(await get(p, 'auto.title'), [{ ok: 'Unmarked' }]);
+        assert.equal(await get(p, 'auto.p3'), 'Three.');
+        await p.close();
+    });
 
     // ---------- the file editor, under `slop-editor edit` ----------
     const file = await fixture();

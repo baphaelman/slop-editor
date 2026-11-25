@@ -26,13 +26,14 @@ The agent moves the page's words into the text block for you. That's the tedious
 ```sh
 npx slop-editor install page.html  # inline slop.css and slop.js, add the text block
 npx slop-editor install --auto page.html  # the same, and move the page's paragraphs, headings and list items into the block
-npx slop-editor edit page.html     # open the page with the editor; it saves into the file
+npx slop-editor edit page.html     # open the page with the editor; it saves into the file (and re-inlines the current code)
 npx slop-editor check page.html    # how much is yours, repeated text, texts the block lacks
 npx slop-editor history page.html  # what each git commit did to who wrote what (a page, or a block kept as .json)
 npx slop-editor sync page.html     # re-inline the current slop.css and slop.js
+npx slop-editor pending            # categories you asked an agent to find, in the pages under this folder
 ```
 
-Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`.
+Or link the files instead of inlining them: `<link rel="stylesheet" href="slop.css">` and `<script src="slop.js"></script>`. A site that installs `slop-editor` from npm can serve `node_modules/slop-editor/slop.js` and `slop.css` itself, so `npm update slop-editor` updates every page. Under `slop-editor edit`, a page that links a `slop.js` or `slop.css` its folder doesn't have gets the CLI's own.
 
 ## The text block
 
@@ -59,7 +60,15 @@ A **text** is a plain string (AI) or a list mixing strings (AI), `{"me": "..."}`
 }
 ```
 
-Slop is only ever the AI's words. Other categories are other people's. Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` ``, `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
+Slop is only ever the AI's words. Other categories are other people's.
+
+**Categories an agent finds.** A category can say whose words it means (`"about"`), and ask an agent to find them in the page's existing text (`"find": true`). In the editor, a new category asks **Whose words are …?**, with **Ask an agent to find them**; select any category to edit its description. Built-ins have one too, and an agent can be asked to find facts and quotes (`data`), never your words or what you approved. The next agent that works on the project is told at the start of its session (with the Claude Code plugin; `npx slop-editor pending` lists them too, and **Copy a prompt** hands one to any agent now). It marks the words (never changing them), records what it changed in `"found": {"on": "2026-11-25", "before": {"<path>": <old value>}}`, and removes `"find"`. The editor then shows **An agent marked 12 texts as Bob · Keep · Undo**. An agent never puts a category on its own words: only on words that came from that person or source (a quote, a paste, a dictation), as `about` describes.
+
+```json
+"bob": { "label": "Bob", "about": "My co-author: the methods section, and quotes from his thesis", "find": true }
+```
+
+Inline markup: `[label](url)`, `**bold**`, `*italic*`, `` `code` `` (a fact: shown and counted as data, whoever wrote it), `[[key]]` for a key cap, `{name}` for a value the page fills in, and `\` to escape.
 
 **Paragraphs.** A blank line in a text shown in a `<p>`, `<li>` or `<dd>` starts a paragraph of its own: the element shows the first, and a copy of it after it shows each of the others (`data-slop-more` instead of `data-slop`). Markup doesn't carry across a blank line. Anywhere else a line break is a `<br>`. An element whose text is empty is hidden (`.slop-empty`), except while the editor is open.
 
@@ -78,7 +87,7 @@ In the page:
 
 Code can render texts itself with `Slop.html('intro.p1')` (HTML), `Slop.paragraphs('intro.p1')` (HTML, one string per paragraph) or `Slop.words('intro.p1')` (plain text). Put `data-slop-ref="intro.p1"` on the element that shows them (a button or link the page builds) and the editor can still find, highlight and scroll to it. Unlike `data-slop`, nothing fills it.
 
-**Lists.** Where the page shows a group's paragraphs (`p1`, `p2`, …) in one element, say so, and the editor can add and remove paragraphs there:
+**Lists.** Where the page shows a group's paragraphs (`p1`, `p2`, …) in one element, the editor can add and remove paragraphs there. That's found without marking when two or more of them are `data-slop` elements with the same parent, the same tag and the same other attributes (so `<p data-b="0">`, `<p data-b="1">` scroll steps aren't a list). Put `data-slop-list="off"` on the parent to opt out. Or say so:
 
 ```html
 <div data-slop-list="intro">            <!-- a copy of the first paragraph for each p<n> in "intro", in order -->
@@ -88,7 +97,7 @@ Code can render texts itself with `Slop.html('intro.p1')` (HTML), `Slop.paragrap
 </div>
 ```
 
-All of the group's paragraphs have to be in that element. A new one goes after the paragraph before it. A page that draws them itself (React and the like) puts `data-slop-list-ref="intro"` on the element around them instead, draws one per paragraph key, in order, and redraws after an edit.
+All of the group's paragraphs have to be in that element; the ones the page has no element for are drawn after the others. A new one goes after the paragraph before it. A page that draws them itself (React and the like) puts `data-slop-list-ref="intro"` on the element around them instead, draws one per paragraph key, in order, and redraws after an edit.
 
 **Words the page doesn't show as words** (alt text for an image that doesn't load, a tooltip, a label for screen readers, a placeholder) go in attributes: `<img data-slop-attr="alt:hero.photo">`, or several at once, `data-slop-attr="alt:hero.photo title:hero.tip"`. They're filled as plain text. The editor gives them a tab of their own, **Hidden**, since readers' colors can't show them.
 
@@ -126,12 +135,12 @@ import Slop, { SlopText, SlopMeter, slopAttrs, slopList, useSlop } from 'slop-ed
 
 ## The editor
 
-`slop-editor edit page.html` serves the page's folder on 127.0.0.1 and opens the page with an **Edit text** button. Published, the page shows no sign of the editor. `Slop.start({edit: 'local'})` gives every visitor an editor that saves in their browser instead (the demo page uses it).
+`slop-editor edit page.html` serves the page's folder on 127.0.0.1 and opens the page with an **Edit text** button. Published, the page shows no sign of the editor. `Slop.start({edit: 'local'})` gives every visitor an editor that saves in their browser instead (the demo page uses it). When the page's author publishes a new version, a visitor's saved edits carry over: the author's changes win, text by text, and the visitor's stay everywhere else. They're kept under the page's path; on a host that gives each version an address of its own, name the page instead: `Slop.start({edit: 'local', key: 'my-page'})`.
 
 - **All** shows every text, grouped by section. **Slop left** shows only the texts that aren't all yours yet; work through it until it's empty. **Repeats** shows the repeated text. **Hidden** (on pages that have some) shows alt text, tooltips and labels.
 - Each text box shows its words in their authors' colors, as readers see them with the Slop-o-meter on.
 - Each text, section and the whole page has a pie of what it's made of, by its name, and a **slop** switch at the right. Off approves the AI's words; on takes that back. Your typed words are never touched. Every switch can be undone from the status line.
-- At the top: how much of the page is slop, and every category with its share and a color picker. Rename a category by editing its name. **+ Category** adds one; × deletes it (its words become AI-generated).
+- At the top: how much of the page is slop, and every category with its share, the biggest first (as in the meters' legends). Click a category's dot for its color picker, laid out like the browser's (a rectangle of shades; the eyedropper, the color and a hue bar; RGB, HEX or HSL numbers). Its eyedropper, or dragging the dot onto any color on the page, takes a color from the page: the point is a ring, and a magnifier beside it (not over it, so you can see where you are) shows the page around the point three times bigger, rimmed in the color, joined to the ring by a line (Escape drops it). **Revert colors** puts every category back to its default. Rename a category by editing its name. **+ Category** adds one; × deletes it (its words become AI-generated).
 - Focus a text and a row of categories appears under it: **Mark all as** (or **Mark selection as**, with words selected) gives the text, or just the selection, to a category.
 - In a list, a **+** under the text you're on adds an empty paragraph after it; pointing at the + draws a line on the page where it would go. The trash can before its slop switch outlines the text on the page in dashed red; a text with words takes a second click (it asks **Remove?**), and stays red until then. A removed text stays in **All** as a row with **Restore** until the next save. New texts get new keys (`p7` between `p2` and `p3` is still called Paragraph 3 in the editor), so a key never moves to other words.
 - Click any text on the page to jump to it in the editor. Focus a text in the editor to find it on the page.

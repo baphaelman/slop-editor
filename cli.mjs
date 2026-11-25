@@ -5,12 +5,15 @@
 //              [--auto]               also move the page's static prose (paragraphs, headings, list items) into the block
 //   slop-editor sync <page.html …>    re-inline the current slop.css and slop.js into pages that have them
 //   slop-editor edit <page.html>      serve the page's folder on localhost with the editor, which saves into the file
+//                                     (it re-inlines the current code first, and serves slop.js/slop.css to a page that links them)
 //              [--port 5178] [--no-open]
 //   slop-editor check <page.html>     what the text is made of, the repeated text, and texts the page uses but the block lacks
 //   slop-editor history <page.html>   what each git commit did to who wrote what (a page, or a block kept as .json)
+//   slop-editor pending [dir|page …]  categories the user asked an agent to find (all pages under the folder by default)
+//              [--hook]               as a Claude Code SessionStart hook's context, and nothing when there are none
 import http from 'node:http';
 import net from 'node:net';
-import { readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat, readdir } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
 import { markup } from './markup.mjs';
@@ -128,7 +131,49 @@ async function check(file) {
     [...page.matchAll(/<[a-z][^>]*?\bdata-slop-attr="([^"]+)"/gi)].forEach((m) => m[1].split(/\s+/).forEach((pair) => { const at = pair.slice(pair.indexOf(':') + 1); if (pair.includes(':') && at) used.add(at); }));
     const missing = [...used].filter((p) => !paths.has(p));
     if (missing.length) console.log(`  missing from the block: ${missing.join(', ')}`);
+    const asked = waiting(text);
+    if (asked.length) console.log(`  waiting for an agent to find: ${asked.map((c) => c.label).join(', ')}`);
     return missing.length ? 1 : 0;
+}
+
+/* ---------- categories to find ---------- */
+
+// a category of the page's own can ask an agent to find its words: {"about": "whose words they are", "find": true}
+const waiting = (text) => Object.entries(text?._categories ?? {}).filter(([, c]) => c?.find).map(([id, c]) => ({ id, label: c.label || id, about: c.about ?? '' }));
+const SKIP = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'vendor']);
+async function pagesIn(dir, found = [], depth = 0) {
+    if (depth > 8 || found.length > 5000) return found;
+    for (const d of await readdir(dir, { withFileTypes: true })) {
+        if (d.name.startsWith('.') || SKIP.has(d.name)) continue;
+        const p = path.join(dir, d.name);
+        if (d.isDirectory()) await pagesIn(p, found, depth + 1);
+        else if (/\.(html?|json)$/i.test(d.name)) found.push(p);
+    }
+    return found;
+}
+async function pending(targets, hook) {
+    const files = [];
+    for (const t of targets) files.push(...((await stat(t)).isDirectory() ? await pagesIn(t) : [t]));
+    const asked = [];
+    for (const file of files) {
+        try {
+            if ((await stat(file)).size > 5e6) continue;
+            const s = await readFile(file, 'utf8');
+            if (!s.includes('"find"')) continue;
+            const text = readBlock(s, file);
+            if (typeof text?.version !== 'number') continue;
+            waiting(text).forEach((c) => asked.push({ file: path.relative(process.cwd(), file) || file, ...c }));
+        } catch { /* not a page with a block */ }
+    }
+    const lines = asked.map((c) => `- ${c.file}: "${c.label}" (id \`${c.id}\`)${c.about ? `: ${c.about}` : ''}`);
+    if (hook) {
+        if (!asked.length) return;
+        const context = `The slop editor: the user asked an agent to find the words of these categories (in each page's slop-text block, under \`_categories\`):\n${lines.join('\n')}\n`
+            + 'Do it in this session, before you finish, unless the user says not to. Follow the slop-editor skill ("Categories to find"), and tell the user what you marked.';
+        console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
+        return;
+    }
+    console.log(asked.length ? `Waiting for an agent to find:\n${lines.join('\n')}` : 'No categories are waiting for an agent.');
 }
 
 /* ---------- edit ---------- */
@@ -145,7 +190,12 @@ const TYPES = {
 async function edit(file, { port, fixed, open }) {
     const root = path.dirname(file);
     const name = path.basename(file);
-    readBlock(await readFile(file, 'utf8'), name); // fail now, not on the first save
+    const html = await readFile(file, 'utf8');
+    readBlock(html, name); // fail now, not on the first save
+    // a page that inlines the code gets this version's, so a page on its own stays current
+    if (!name.endsWith('.json') && STYLE.test(html) && SCRIPT.test(html)) await sync(file);
+    const asked = waiting(readBlock(html, name));
+    if (asked.length) console.log(`Waiting for an agent to find: ${asked.map((c) => c.label).join(', ')}`);
     let queue = Promise.resolve(); // one save at a time
     const save = (body) => {
         const run = queue.then(async () => {
@@ -172,6 +222,10 @@ async function edit(file, { port, fixed, open }) {
             res.end(body);
         };
         if (url.pathname === '/__slop') {
+            // only the page being edited: another page in its folder would save its own block into this file
+            let from = '/';
+            try { from = decodeURIComponent(new URL(req.headers.referer).pathname); } catch { /* no referer: curl, say */ }
+            if (from !== '/' && from !== `/${name}`) return req.method === 'POST' ? send(403, `this server edits ${name}`) : send(200, 'another page');
             if (req.method !== 'POST') return send(200, 'slop-editor');
             let body = '';
             req.on('data', (chunk) => { body += chunk; });
@@ -193,6 +247,9 @@ async function edit(file, { port, fixed, open }) {
             if (!(await stat(target)).isFile()) return send(404, 'not found');
             send(200, await readFile(target), TYPES[path.extname(target).toLowerCase()] ?? 'application/octet-stream');
         } catch {
+            // a page that links slop.js and slop.css from elsewhere (a site's build serves them) gets this version's
+            const own = path.basename(url.pathname);
+            if (own === 'slop.js' || own === 'slop.css') return send(200, await readFile(path.join(here, own)), TYPES[path.extname(own)]);
             send(404, 'not found');
         }
     });
@@ -282,11 +339,12 @@ const portFlag = flag('--port') ?? process.env.PORT;
 const port = Number(portFlag ?? 5178);
 const autoFlag = args.includes('--auto') && args.splice(args.indexOf('--auto'), 1);
 const noOpen = args.includes('--no-open') && args.splice(args.indexOf('--no-open'), 1);
+const hookFlag = args.includes('--hook') && args.splice(args.indexOf('--hook'), 1);
 const [cmd, ...rest] = args;
 const files = rest.map((f) => path.resolve(f));
-const usage = 'usage: slop-editor install <page.html> [--auto] | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …> | history <page.html>';
+const usage = 'usage: slop-editor install <page.html> [--auto] | sync <page.html …> | edit <page.html> [--port N] [--no-open] | check <page.html …> | history <page.html> | pending [dir|page …] [--hook]';
 
-if (cmd !== 'help' && cmd && !files.length) {
+if (cmd !== 'help' && cmd !== 'pending' && cmd && !files.length) {
     console.error(usage);
     process.exit(1);
 }
@@ -321,6 +379,12 @@ try {
         process.exitCode = status;
     } else if (cmd === 'history') {
         for (const file of files) await history(file);
+    } else if (cmd === 'pending') {
+        try {
+            await pending(files.length ? files : [process.cwd()], hookFlag);
+        } catch (e) {
+            if (!hookFlag) throw e; // a session's start never fails on this
+        }
     } else {
         console.log(usage);
     }

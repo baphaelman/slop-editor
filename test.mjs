@@ -1,6 +1,6 @@
 // node test.mjs: the format's functions, from slop.js (outside a browser it returns only those)
 import { readFile, writeFile, mkdtemp, mkdir, copyFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -54,6 +54,12 @@ test('makeup counts every category, data included', () => {
     assert.equal(m.letters, 8);
 });
 
+test('code is a fact: shown and counted as data, whoever wrote it', () => {
+    const m = Slop.makeup([['run ', '`npx x`', ' or ', { me: 'type `ls`' }]]);
+    assert.deepEqual(m.counts, { ai: 5, data: 6, me: 4 });
+    assert.match(Slop.render('run `npx x`'), /<span class="code"><span class="slop-data">npx x<\/span><\/span>/);
+});
+
 test('share: what is mine (typed or approved), not counting spaces, data or values', () => {
     const s = Slop.share([['ab ', { me: 'c ' }, { ok: 'd ' }, { data: 'zzzz' }, '{n}']]);
     assert.equal(s.fraction, 0.5);
@@ -73,6 +79,33 @@ test('repeated text: the same words in several places, whoever wrote each copy',
     assert.deepEqual(sets, [{ words: 'How it works', paths: ['nav.how', 'how.title', 'footer.how'] }]);
 });
 
+test('rebase: a copy saved in the browser keeps its edits where the author didn\'t change the text', () => {
+    const base = { version: 1, _show: 'pie', _categories: { bob: { label: 'Bob' } }, a: { t: 'Title', p1: 'One.', p2: 'Two.', gone: 'Old.' } };
+    const mine = { version: 1, _show: 'colors', _categories: { bob: { label: 'Bob' }, sue: { label: 'Sue' } }, a: { t: [{ ok: 'Title' }], p1: [{ me: 'Mine.' }], p3: 'Added here.', p2: 'Two.', gone: 'Old.' } };
+    const page = { version: 2, _show: 'pie', _categories: { bob: { label: 'Robert' } }, a: { t: 'Title', p1: 'One.', p2: 'Two, rewritten.', p4: 'New.' }, b: { t: 'A new section' } };
+    const out = Slop.rebase(base, mine, page);
+    assert.deepEqual(out, {
+        version: 2, _show: 'colors', _categories: { bob: { label: 'Robert' }, sue: { label: 'Sue' } },
+        a: { t: [{ ok: 'Title' }], p1: [{ me: 'Mine.' }], p3: 'Added here.', p2: 'Two, rewritten.', p4: 'New.' }, b: { t: 'A new section' },
+    });
+    assert.deepEqual(Object.keys(out.a), ['t', 'p1', 'p3', 'p2', 'p4']);
+    // a text the copy removed stays removed, unless the author changed it
+    assert.deepEqual(Slop.rebase({ a: { x: '1', y: '2' } }, { a: {} }, { a: { x: '1', y: '3' } }), { a: { y: '3' } });
+});
+
+test('lists without marking: a group\'s paragraphs in alike elements with one parent', () => {
+    const p = (path, parent, attrs, tag = 'P') => ({ path, parent, tag, attrs });
+    const found = (...items) => Object.fromEntries(Slop.listsIn(items));
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.title', 'A', {}, 'H2'), p('a.p2', 'A', {}), p('b.c.p1', 'B', { class: 'x' }), p('b.c.p2', 'B', { class: 'x' })), { a: 'A', 'b.c': 'B' });
+    // scroll steps told apart by an attribute aren't a list
+    assert.deepEqual(found(p('pure.p1', 'S', { 'data-b': '0' }), p('pure.p2', 'S', { 'data-b': '1' })), {});
+    // nor paragraphs in two parents, in different tags, or one on its own
+    assert.deepEqual(found(p('ring.p1', 'C', {}), p('ring.p2', 'Q', {}), p('ring.p3', 'Q', {})), {});
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.p2', 'A', {}, 'LI')), {});
+    assert.deepEqual(found(p('a.p1', 'A', {}), p('a.note', 'A', {})), {});
+    assert.deepEqual(found(p('a.p1', 'A', { id: 'x' }), p('a.p2', 'A', {})), {});
+});
+
 test('paragraphs: a blank line splits a text, each part keeping its authors', () => {
     assert.deepEqual(Slop.paragraphsOf('One line\nand the next'), ['One line\nand the next']);
     assert.deepEqual(Slop.paragraphsOf(['First. ', { me: 'Mine.\n\nSecond, ' }, 'by the AI.\n  \n\n']), [['First. ', { me: 'Mine.' }], [{ me: 'Second, ' }, 'by the AI.']]);
@@ -84,7 +117,7 @@ test('markup: links, emphasis, code, values', () => {
     const runs = Slop.runs(['See [the **docs**](https://x.y) and ', { me: '`code`' }, ' {n}']);
     assert.equal(runs.find((r) => r.b).text, 'docs');
     assert.equal(runs.find((r) => r.b).link.href, 'https://x.y');
-    assert.equal(runs.find((r) => r.code).by, 'me');
+    assert.equal(runs.find((r) => r.code).by, 'data');
     assert.equal(runs.find((r) => r.v).v, 'n');
     assert.equal(Slop.readable('a {n} b'.replace('{n}', '\\{n}')), 'a {n} b');
 });
@@ -103,6 +136,54 @@ test('install --auto: prose moves into the block, labels, code and other markup 
     assert.ok(r.html.includes('<h1 data-slop="big-news.title"></h1>'));
     assert.ok(r.html.includes('<p>Short one</p>') && r.html.includes('<nav><p>Not in the nav at all</p></nav>'));
     assert.equal(Slop.readable(r.block['big-news'].p3), 'Second {x} para here.');
+});
+
+test('edit: a page that inlines old code gets the current code; one that links it is served it', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-edit-'));
+    const page = path.join(dir, 'page.html');
+    const block = '<script type="application/json" id="slop-text">{"version": 1}</script>';
+    await writeFile(page, `<style id="slop-css">old</style><p>hi</p>${block}<script id="slop-js">old</script>`);
+    await writeFile(path.join(dir, 'linked.html'), `<link rel="stylesheet" href="/slop/slop.css">${block}<script src="/slop/slop.js"></script>`);
+    const server = spawn(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'edit', page, '--no-open', '--port', '5251'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    try {
+        const link = await new Promise((resolve) => server.stdout.on('data', (d) => { const m = /http:\/\/\S+/.exec(String(d)); if (m) resolve(m[0]); }));
+        const html = await readFile(page, 'utf8');
+        assert.ok(html.includes((await readFile(new URL('slop.js', import.meta.url), 'utf8')).slice(0, 200)));
+        assert.ok(!html.includes('>old<'));
+        const js = await fetch(new URL('/slop/slop.js', link));
+        assert.equal(js.status, 200);
+        assert.match(js.headers.get('content-type'), /javascript/);
+        assert.equal((await fetch(new URL('/slop/slop.css', link))).status, 200);
+        assert.equal((await fetch(new URL('/slop/other.js', link))).status, 404);
+        // only the page being edited gets the editor: another page in its folder would save into this one
+        const hello = (from) => fetch(new URL('/__slop', link), { headers: { referer: new URL(from, link).href } }).then((r) => r.text());
+        assert.equal(await hello('/page.html'), 'slop-editor');
+        assert.equal(await hello('/linked.html'), 'another page');
+        assert.equal((await fetch(new URL('/__slop', link), { method: 'POST', body: '{"version":1}', headers: { referer: new URL('/linked.html', link).href } })).status, 403);
+    } finally {
+        server.kill();
+    }
+});
+
+test('pending: categories the user asked an agent to find, and the session hook\'s context', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'slop-pending-'));
+    const cats = { bob: { label: 'Bob', about: 'My co-author: the methods section', find: true }, sue: { label: 'Sue' } };
+    await writeFile(path.join(dir, 'page.html'), `<p>hi</p><script type="application/json" id="slop-text">${JSON.stringify({ version: 1, _categories: cats })}</script>`);
+    await mkdir(path.join(dir, 'src'));
+    await writeFile(path.join(dir, 'src', 'text.json'), JSON.stringify({ version: 3, _categories: { ann: { find: true } } }));
+    await mkdir(path.join(dir, 'node_modules'));
+    await writeFile(path.join(dir, 'node_modules', 'x.json'), JSON.stringify({ version: 1, _categories: { no: { find: true } } }));
+    const run = (...a) => execFileSync(process.execPath, [new URL('cli.mjs', import.meta.url).pathname, 'pending', ...a], { cwd: dir, encoding: 'utf8' });
+    const out = run();
+    assert.match(out, /page\.html: "Bob" \(id `bob`\): My co-author: the methods section/);
+    assert.match(out, /src\/text\.json: "ann"/);
+    assert.ok(!/Sue|node_modules/.test(out));
+    const hook = JSON.parse(run('--hook'));
+    assert.equal(hook.hookSpecificOutput.hookEventName, 'SessionStart');
+    assert.match(hook.hookSpecificOutput.additionalContext, /"Bob"[\s\S]*Categories to find/);
+    await writeFile(path.join(dir, 'page.html'), '<p>no block</p>');
+    await writeFile(path.join(dir, 'src', 'text.json'), '{}');
+    assert.equal(run('--hook'), ''); // nothing waiting: nothing said
 });
 
 test('history: what each commit did to who wrote what', async () => {

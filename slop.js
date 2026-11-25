@@ -8,14 +8,15 @@
    Top-level keys that start with "_" aren't text: "_categories" holds the page's own categories and colors,
    {"<id>": {"label": "...", "color": "#rrggbb"}}, for built-in ones too, and "_show" what readers see: "nothing" (the
    default), "pie" (a pie of who wrote what, with a legend) or "colors" (the Slop-o-meter switch, which colors the words).
-   Inside any text: [label](url) is a link, **bold**, *italic*, `code`, [[key]] a key cap, {name} a value the page
-   fills in (Slop.vars), and \ makes the next character literal.
+   Inside any text: [label](url) is a link, **bold**, *italic*, `code` (a fact, shown as data), [[key]] a key cap,
+   {name} a value the page fills in (Slop.vars), and \ makes the next character literal.
 
    A blank line starts a new paragraph in a <p>, <li> or <dd>.
 
    Elements with data-slop="group.key" are filled from the block. Code renders the rest with Slop.html(path). An
    element with data-slop-list="group" shows each text in that group in a copy of its first child, and the editor can
-   add and remove texts there (data-slop-list-ref: the page draws them itself).
+   add and remove texts there (data-slop-list-ref: the page draws them itself). A group's paragraphs in alike elements
+   with one parent are a list without marking (data-slop-list="off" on the parent: not one).
    An element with data-slop-meter becomes the Slop-o-meter switch. Under `slop-editor edit`, the page also gets the
    editor, which saves back into the file; with Slop.start({edit: 'local'}) it gets one that saves in the browser. */
 const Slop = (() => {
@@ -106,7 +107,8 @@ const Slop = (() => {
     const same = (a, b) => a.by === b.by && a.link === b.link && a.b === b.b && a.i === b.i && a.code === b.code && a.key === b.key;
 
     // the text as it reads: runs of one author's words (`by`: the category) with their formatting (b, i, code, key)
-    // and the link they sit in, if any. A {name} is a run of its own with `v` set
+    // and the link they sit in, if any. A {name} is a run of its own with `v` set. Code is a fact: whoever wrote it,
+    // a command or a file name reads as data
     function runs(value) {
         const text = plain(value);
         const authors = authorsByChar(value);
@@ -115,7 +117,7 @@ const Slop = (() => {
         let linkEnd = -1;
         let linkTail = 0;
         const push = (s, by, v) => {
-            const run = { text: s, by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v };
+            const run = { text: s, by: st.code ? 'data' : by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v };
             const last = out[out.length - 1];
             if (last && !last.v && !v && same(last, run)) last.text += s;
             else out.push(run);
@@ -165,6 +167,8 @@ const Slop = (() => {
     // whoever wrote the {name}), or a plain string or number (a fact)
     const vars = {};
     const config = { code: 'code' };
+    // where the browser editor keeps this page's copy: its path, or the page's own name for it (Slop.start({key}))
+    const pageKey = () => config.key ?? location.pathname;
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
     const stripTags = (h) => h.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
     // the class a category's words render with
@@ -262,7 +266,51 @@ const Slop = (() => {
         return [...byWords].filter(([, paths]) => paths.length > 1).map(([words, paths]) => ({ words, paths }));
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, wordsOf, paragraphsOf, vars };
+    // a copy of the block saved in the browser, carried over to a page the author has changed since: text by text,
+    // the copy's value stays where the page's is still the one the copy was based on, and the page's wins where the
+    // author changed, added or removed it. Groups (and _categories) merge key by key; what the copy added keeps its
+    // place after the key it followed
+    function rebase(base, mine, page) {
+        const group = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+        if (!group(base) || !group(mine) || !group(page)) return JSON.stringify(page) === JSON.stringify(base) ? mine : page;
+        const keys = Object.keys(page);
+        Object.keys(mine).forEach((k, i, order) => {
+            if (keys.includes(k)) return;
+            const after = order.slice(0, i).reverse().find((x) => keys.includes(x));
+            keys.splice(after === undefined ? 0 : keys.indexOf(after) + 1, 0, k);
+        });
+        const out = {};
+        keys.forEach((k) => {
+            const v = rebase(base[k], mine[k], page[k]);
+            if (v !== undefined) out[k] = v;
+        });
+        return out;
+    }
+
+    // a group's paragraphs (keys p1, p2…) are a list without marking when the page has two or more of them in
+    // elements that share one parent and are alike: the same tag and the same other attributes, so steps told apart by
+    // an attribute (data-b="0", "1"…) aren't one. [{path, parent, tag, attrs}] → Map group → parent
+    const isParagraph = (key) => /^p\d+$/.test(key);
+    function listsIn(items) {
+        const byGroup = new Map();
+        items.forEach((x) => {
+            const keys = x.path.split('.');
+            if (keys.length < 2 || !isParagraph(keys.at(-1))) return;
+            const g = keys.slice(0, -1).join('.');
+            if (!byGroup.has(g)) byGroup.set(g, []);
+            byGroup.get(g).push(x);
+        });
+        const look = (x) => `${x.tag}\n${JSON.stringify(Object.entries(x.attrs ?? {}).sort())}`;
+        const out = new Map();
+        byGroup.forEach((xs, g) => {
+            const [a] = xs;
+            if (xs.length < 2 || a.parent == null || new Set(xs.map((x) => x.path)).size < xs.length) return;
+            if (xs.every((x) => x.parent === a.parent && look(x) === look(a))) out.set(g, a.parent);
+        });
+        return out;
+    }
+
+    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -380,10 +428,33 @@ const Slop = (() => {
     // a list: an element with data-slop-list="group" shows the group's paragraphs (p1, p2, …), in order, each in a copy
     // of the first. The group's other texts (a title, a caption) and the element's other children stay where they
     // are. (With data-slop-list-ref, the page draws them itself.) Either way, the editor can add and remove paragraphs
-    const isParagraph = (key) => /^p\d+$/.test(key);
     const templates = new WeakMap(); // list → the element its paragraphs are copies of
+    // lists the page didn't mark (listsIn): [data-slop] elements, filled here, not drawn by the page's code. Its
+    // paragraphs that aren't on the page yet are drawn after the others, as in a marked list. Once found, a list stays
+    // one while its element is on the page. data-slop-list="off" on the parent opts out
+    const autos = new Map(); // parent → group
+    const marked = (x) => (x.dataset.slopList && x.dataset.slopList !== 'off' ? x.dataset.slopList : '');
+    const listOf = (box) => marked(box) || autos.get(box);
+    // an element's attributes but data-slop and the classes slop.js adds
+    const own = (x) => Object.fromEntries([...x.attributes].filter((a) => a.name !== 'data-slop')
+        .map((a) => [a.name, a.name === 'class' ? [...x.classList].filter((c) => !c.startsWith('slop-')).sort().join(' ') : a.value])
+        .filter(([name, v]) => name !== 'class' || v));
+    function findLists() {
+        autos.forEach((g, box) => { if (!box.isConnected) autos.delete(box); });
+        const taken = new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => marked(x) || x.dataset.slopListRef).filter(Boolean));
+        autos.forEach((g) => taken.add(g));
+        const els = [...document.querySelectorAll('[data-slop]')].filter((x) => !x.closest('.slop-panel'));
+        listsIn(els.map((x) => ({ path: x.dataset.slop, parent: x.parentElement, tag: x.tagName, attrs: own(x) }))).forEach((box, g) => {
+            if (taken.has(g) || box.dataset.slopList === 'off' || autos.has(box)) return;
+            // the page's code shows one of them some other way: not a list of ours
+            const paths = textKeys(nodeAt(text, g)).filter(isParagraph).map((k) => `${g}.${k}`);
+            if (paths.some((p) => rendered.has(p) || revealers.has(p) || elementsOf(p).some((x) => !x.dataset.slop && !x.dataset.slopMore))) return;
+            autos.set(box, g);
+        });
+    }
     function fillList(box) {
-        const at = box.dataset.slopList;
+        const at = listOf(box);
+        if (!at) return;
         const ours = (x) => x.dataset.slop?.startsWith(`${at}.`) && isParagraph(x.dataset.slop.slice(at.length + 1));
         if (!templates.has(box)) {
             const first = [...box.children].find(ours);
@@ -410,7 +481,9 @@ const Slop = (() => {
         });
     }
     const fill = (root = document) => {
+        if (root === document || root.matches?.('[data-slop]') || root.querySelector?.('[data-slop]')) findLists();
         root.querySelectorAll('[data-slop-list]').forEach(fillList);
+        autos.forEach((g, box) => { if (root.contains(box) && !marked(box)) fillList(box); });
         root.querySelectorAll('[data-slop], [data-slop-attr]').forEach(fillOne);
         // paragraphs whose element the page took away, or no longer shows that text in
         root.querySelectorAll('[data-slop-more]').forEach((c) => {
@@ -429,7 +502,7 @@ const Slop = (() => {
     };
     // the [data-slop] elements and meters in what the page added after start (a single-page app draws late)
     function added(n) {
-        if (n.nodeType !== 1 || n.closest('.slop-panel')) return;
+        if (n.nodeType !== 1 || n.closest('.slop-panel, .slop-sampler')) return;
         seenSoon();
         if (n.matches('[data-slop-list]')) fillList(n);
         if (n.matches('[data-slop], [data-slop-attr]')) fillOne(n);
@@ -547,7 +620,7 @@ const Slop = (() => {
 
     const storage = (area) => ({
         get: (k) => { try { return area().getItem(k); } catch { return null; } },
-        set: (k, v) => { try { area().setItem(k, v); } catch { /* optional */ } },
+        set: (k, v) => { try { area().setItem(k, v); return true; } catch { return false; } },
         drop: (k) => { try { area().removeItem(k); } catch { /* optional */ } },
     });
     const store = storage(() => localStorage);
@@ -600,7 +673,7 @@ const Slop = (() => {
             pie.title = breakdown(m, cats);
             pie.setAttribute('aria-label', pie.title);
             // each category in its own color, with its share of the text
-            legend.innerHTML = cats.filter((c) => m.counts[c.id])
+            legend.innerHTML = cats.filter((c) => m.counts[c.id]).sort((a, b) => m.counts[b.id] - m.counts[a.id])
                 .map((c) => `<span class="slop-key" tabindex="0" data-id="${esc(c.id)}" style="color:${swatch(c)}"><i style="background:${swatch(c)}"></i>${esc(c.label)}<b class="slop-pct">${percent(m.counts[c.id] / m.letters)}</b></span>`).join('');
         });
     }
@@ -648,7 +721,8 @@ const Slop = (() => {
         return title && title.length <= 32 ? title : human(key);
     };
     // the groups the page shows as lists, where the editor can add and remove texts
-    const listed = () => new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => x.dataset.slopList || x.dataset.slopListRef));
+    const listed = () => new Set([...document.querySelectorAll('[data-slop-list], [data-slop-list-ref]')].map((x) => marked(x) || x.dataset.slopListRef).filter(Boolean)
+        .concat([...autos].filter(([box]) => box.isConnected).map(([, g]) => g)));
     // keys[i], for people. In a list, a paragraph is named by where it is: "Paragraph 3", even when its key is p7
     function keyName(keys, i) {
         const group = keys.slice(0, i).join('.');
@@ -672,7 +746,7 @@ const Slop = (() => {
     const startTab = () => (repeats(entries()).some((s) => s.paths.some(slopIn)) ? 'repeats' : entries().some(([p]) => slopIn(p)) ? 'slop' : 'all');
 
     function editor(mode) {
-        const LOCAL = `slop-text:${location.pathname}`;
+        const LOCAL = `slop-text:${pageKey()}`;
         // open: the first section, and any the page adds later (pasted text, say)
         // it opens on Repeats, or on Slop left when nothing is repeated
         const state = { tab: startTab(), open: new Set(groupKeys().slice(0, 1)), known: new Set(groupKeys()), focus: null };
@@ -791,23 +865,29 @@ const Slop = (() => {
             for (let n = 2; id in BUILTIN || text._categories?.[id] || categories().some((c) => c.id === id); n++) id = `${base}-${n}`;
             return id;
         };
+        // the categories, the one with most of the page first (as the meters' legends). A category of the page's own
+        // can say whose words it means and ask an agent to find them (about, find); what an agent marked waits for
+        // Keep or Undo (found.before)
         function renderCats() {
+            closePicker();
             const box = $('.sp-cats');
             box.innerHTML = '';
-            categories().forEach((cat) => {
-                const row = el('span', 'sp-cat', `<label class="sp-swatch" title="Pick a color for ${esc(cat.label)}"><input type="color"></label>`
+            const counts = makeup(entries().map(([, v]) => v)).counts;
+            categories().sort((a, b) => (counts[b.id] ?? 0) - (counts[a.id] ?? 0)).forEach((cat) => {
+                const row = el('span', 'sp-cat', `<button type="button" class="sp-swatch" title="Click to pick a color for ${esc(cat.label)}, or drag onto the page to take one from it" aria-label="Pick a color for ${esc(cat.label)}"></button>`
                     + `<input class="sp-cat-name" aria-label="Category name" spellcheck="false"><b class="sp-cat-pct"></b>`
                     + (cat.builtin ? '' : `<button type="button" class="sp-cat-x" title="Delete ${esc(cat.label)}: its words become AI-generated">×</button>`));
                 row.dataset.id = cat.id;
-                const picker = row.querySelector('input[type="color"]');
-                picker.value = hex(swatch(cat));
-                row.querySelector('.sp-swatch').style.background = swatch(cat);
-                picker.addEventListener('input', () => {
-                    own(cat.id).color = picker.value;
-                    row.querySelector('.sp-swatch').style.background = picker.value;
+                const dot = row.querySelector('.sp-swatch');
+                const pick = (color) => {
+                    setColor(cat.id, color);
+                    dot.style.background = color;
                     applyColors();
                     touched();
-                });
+                };
+                dot.style.background = swatch(cat);
+                dragColor(dot, pick);
+                dot.addEventListener('click', (e) => { if (!e.defaultPrevented) picker(cat.id, dot, pick); });
                 const name = row.querySelector('.sp-cat-name');
                 name.value = cat.label;
                 name.size = Math.max(3, cat.label.length);
@@ -817,6 +897,9 @@ const Slop = (() => {
                     touched();
                 });
                 name.addEventListener('keydown', (e) => { if (e.key === 'Enter') name.blur(); });
+                // selecting a category opens whose words it means, under the categories
+                name.addEventListener('focus', () => about(cat.id));
+                row.addEventListener('click', (e) => { if (!e.target.closest('.sp-swatch, .sp-cat-x, .sp-cat-name')) about(cat.id); });
                 row.querySelector('.sp-cat-x')?.addEventListener('click', () => {
                     withUndo(`Deleted "${cat.label}"`, () => {
                         entries().forEach(([p, v]) => set(p, reattribute(v, cat.id, 'ai')));
@@ -836,23 +919,446 @@ const Slop = (() => {
                 add.replaceWith(input);
                 input.focus();
                 let finished = false;
+                let made = null;
                 const done = (keep) => {
                     if (finished) return;
                     finished = true;
                     const label = input.value.trim();
                     if (keep && label) {
-                        const id = slug(label);
+                        made = slug(label);
                         const color = PALETTE[categories().filter((c) => !c.builtin).length % PALETTE.length];
-                        Object.assign(own(id), { label, color });
+                        Object.assign(own(made), { label, color });
                         applyColors();
                         touched();
                     }
                     render();
+                    if (made) about(made, true); // whose words they are, next
                 };
                 input.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
                 input.addEventListener('blur', () => done(true), { once: true });
             });
             box.append(add);
+            // every picked color back to the default, in one undoable step. Shown while there's one (numbers())
+            const back = el('button', 'sp-cat-revert', 'Revert colors');
+            back.type = 'button';
+            back.title = 'Every category back to its default color';
+            back.addEventListener('click', () => {
+                withUndo('Colors back to the defaults', () => Object.keys(text._categories).forEach((id) => setColor(id, null)));
+                applyColors();
+                render();
+            });
+            box.append(back);
+            if (aboutOpen && categories().some((c) => c.id === aboutOpen)) about(aboutOpen);
+            // what an agent marked, for the author to keep or undo
+            Object.entries(text._categories ?? {}).forEach(([id, c]) => {
+                const before = c.found?.before;
+                if (!before || !Object.keys(before).length) return;
+                const n = Object.keys(before).length;
+                const label = categories().find((x) => x.id === id)?.label ?? id;
+                const note = el('p', 'sp-found', `${esc(`An agent marked ${count(n, 'text')} as ${label}${c.found.on ? ` on ${day(c.found.on)}` : ''}`)} · `);
+                note.dataset.id = id;
+                const keep = el('button', 'sp-link', 'Keep');
+                keep.type = 'button';
+                keep.title = 'Keep what the agent marked';
+                keep.addEventListener('click', () => { withUndo(`Kept the agent's marks for ${label}`, () => { delete c.found.before; }); render(); });
+                const undoBtn = el('button', 'sp-link', 'Undo');
+                undoBtn.type = 'button';
+                undoBtn.title = 'Give those texts back to whoever had them before (texts whose words changed since stay as they are)';
+                undoBtn.addEventListener('click', () => {
+                    withUndo(`Undid the agent's marks for ${label}`, () => {
+                        Object.entries(before).forEach(([p, was]) => {
+                            const now = valueAt(text, p);
+                            if (now !== undefined && plain(now) === plain(was)) set(p, was);
+                        });
+                        delete c.found;
+                    });
+                    render();
+                });
+                note.append(keep, ' · ', undoBtn);
+                box.append(note);
+            });
+        }
+        const day = (iso) => { const d = new Date(`${iso}T12:00:00`); return Number.isNaN(+d) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+
+        /* whose words a category means, and whether an agent should find them: under the categories while open */
+        let aboutOpen = null;
+        // an agent can find the words of a category of the page's own, or facts and quotes. Only the author can say which
+        // words are theirs or approved, and slop is whatever's left
+        const findable = (id) => !(id in BUILTIN) || id === 'data';
+        // a category's entry, dropped once it says nothing
+        function tidy(id) {
+            const c = text._categories?.[id];
+            if (c && !Object.keys(c).length) delete text._categories[id];
+            if (text._categories && !Object.keys(text._categories).length) delete text._categories;
+        }
+        function about(id, focus) {
+            aboutOpen = id;
+            const box = $('.sp-cats');
+            box.querySelector('.sp-about')?.remove();
+            box.querySelectorAll('.sp-cat').forEach((x) => x.classList.toggle('sp-cat-on', x.dataset.id === id));
+            const c = () => text._categories?.[id] ?? {};
+            const label = () => categories().find((x) => x.id === id)?.label ?? id;
+            const panel = el('div', 'sp-about', `<label class="sp-about-q" for="sp-about-${esc(id)}"></label>`
+                + `<textarea id="sp-about-${esc(id)}" rows="2" spellcheck="true" placeholder="Who wrote them, or where they come from"></textarea>`
+                + '<div class="sp-about-row"><label class="sp-check"><input type="checkbox"> Ask an agent to find them</label><button type="button" class="sp-link sp-about-done">Done</button></div>'
+                + '<p class="sp-about-note"></p>');
+            panel.dataset.id = id;
+            panel.querySelector('.sp-about-q').textContent = `Whose words are ${label()}?`;
+            const desc = panel.querySelector('textarea');
+            const ask = panel.querySelector('input[type="checkbox"]');
+            const note = panel.querySelector('.sp-about-note');
+            panel.querySelector('.sp-check').hidden = !findable(id);
+            desc.value = c().about ?? '';
+            ask.checked = !!c().find;
+            const paint = () => {
+                note.innerHTML = '';
+                if (c().find) {
+                    note.append('Waiting for an agent: it finds them the next time one works on this page, once you save. ');
+                    const copy = el('button', 'sp-link', 'Copy a prompt');
+                    copy.type = 'button';
+                    copy.title = 'To ask an agent now';
+                    copy.addEventListener('click', () => {
+                        const page = decodeURIComponent(location.pathname.split('/').pop() || '') || 'this page';
+                        const prompt = `In ${page}, find the words that belong to the slop-editor category "${label()}"${c().about ? ` (${c().about})` : ''} and mark them, following the slop-editor skill's "Categories to find".`;
+                        Promise.resolve(navigator.clipboard?.writeText(prompt)).then(() => status('Prompt copied')).catch(() => status("Couldn't copy the prompt", 'error'));
+                    });
+                    note.append(copy);
+                } else if (c().found?.on) note.append(`Found by an agent · ${day(c().found.on)}`);
+                note.hidden = !note.childNodes.length;
+            };
+            desc.addEventListener('input', () => {
+                if (desc.value.trim()) own(id).about = desc.value.trim();
+                else { delete text._categories?.[id]?.about; tidy(id); }
+                touched();
+            });
+            ask.addEventListener('change', () => {
+                if (ask.checked) own(id).find = true;
+                else { delete text._categories?.[id]?.find; tidy(id); }
+                paint();
+                touched();
+            });
+            panel.querySelector('.sp-about-done').addEventListener('click', () => {
+                aboutOpen = null;
+                panel.remove();
+                box.querySelectorAll('.sp-cat-on').forEach((x) => x.classList.remove('sp-cat-on'));
+            });
+            paint();
+            box.querySelector('.sp-found') ? box.querySelector('.sp-found').before(panel) : box.append(panel);
+            if (focus) desc.focus();
+        }
+
+        /* the color picker, under a category's dot, laid out like the browser's own: a rectangle of shades, then the
+           eyedropper, the color and a hue bar, then its numbers (RGB, HEX or HSL: the arrows switch). Its eyedropper shows
+           the page magnified beside the pointer, not over it */
+        const rgbOf = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+        const hexOf = (rgb) => `#${rgb.map((v) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, '0')).join('')}`;
+        function toHsv(color) {
+            const [r, g, b] = rgbOf(color).map((v) => v / 255);
+            const max = Math.max(r, g, b);
+            const d = max - Math.min(r, g, b);
+            const h = !d ? 0 : max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+            return { h: (h * 60 + 360) % 360, s: max ? d / max : 0, v: max };
+        }
+        function fromHsv({ h, s, v }) {
+            const f = (n) => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+            return hexOf([f(5), f(3), f(1)].map((x) => x * 255));
+        }
+        function hslOf(color) {
+            const [r, g, b] = rgbOf(color).map((v) => v / 255);
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            const l = (max + min) / 2;
+            const d = max - min;
+            const s = !d ? 0 : d / (1 - Math.abs(2 * l - 1));
+            return [Math.round(toHsv(color).h), Math.round(s * 100), Math.round(l * 100)];
+        }
+        function fromHsl([h, s, l]) {
+            const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+            const f = (n) => { const k = (n + h / 30) % 12; return l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+            return hexOf([f(0), f(8), f(4)].map((x) => x * 255));
+        }
+        const FORMATS = {
+            rgb: { labels: ['R', 'G', 'B'], read: rgbOf, write: hexOf, max: [255, 255, 255] },
+            hex: { labels: ['HEX'], read: (c) => [c], write: ([v]) => (/^#?[0-9a-f]{6}$/i.test(v.trim()) ? `#${v.trim().replace('#', '').toLowerCase()}` : null) },
+            hsl: { labels: ['H', 'S', 'L'], read: hslOf, write: fromHsl, max: [359, 100, 100] },
+        };
+        const DROPPER = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M10.4 2.4a1.9 1.9 0 0 1 2.7 2.7l-1.6 1.6.8.8-1.1 1.1-.8-.8-5.2 5.2H3v-2.2l5.2-5.2-.8-.8 1.1-1.1.8.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+        let pickEl = null;
+        let pickFormat = 'rgb';
+        let dropping = false;
+        function closePicker() {
+            pickEl?.remove();
+            pickEl = null;
+        }
+        function picker(id, dot, pick) {
+            const again = pickEl?.dataset.id === id;
+            closePicker();
+            if (again) return; // a second click on the dot closes it
+            const cat = () => categories().find((c) => c.id === id);
+            const p = el('div', 'sp-pick', '<div class="sp-pick-sv" tabindex="0" role="slider" aria-label="Shade: right for more color, down for darker"><i></i></div>'
+                + `<div class="sp-pick-row"><button type="button" class="sp-pick-drop" title="Take a color from the page" aria-label="Take a color from the page">${DROPPER}</button>`
+                + '<b class="sp-pick-now"></b><input type="range" class="sp-pick-hue" min="0" max="359" step="1" aria-label="Hue"></div>'
+                + '<div class="sp-pick-nums"></div>');
+            p.dataset.id = id;
+            pickEl = p;
+            const sv = p.querySelector('.sp-pick-sv');
+            const handle = sv.querySelector('i');
+            const hue = p.querySelector('.sp-pick-hue');
+            const now = p.querySelector('.sp-pick-now');
+            const nums = p.querySelector('.sp-pick-nums');
+            let hsv = toHsv(hex(swatch(cat())));
+            function fields() {
+                const f = FORMATS[pickFormat];
+                nums.innerHTML = f.labels.map((l) => `<label class="sp-pick-num"><input spellcheck="false" aria-label="${l}"><span>${l}</span></label>`).join('')
+                    + '<button type="button" class="sp-pick-swap" title="RGB, HEX or HSL" aria-label="Switch between RGB, HEX and HSL"><svg viewBox="0 0 12 16" width="10" height="14" aria-hidden="true"><path d="M2 6l4-4 4 4M2 10l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
+                const inputs = [...nums.querySelectorAll('input')];
+                inputs.forEach((input) => input.addEventListener('input', () => {
+                    const vals = inputs.map((x) => (f.max ? Number(x.value) : x.value));
+                    if (f.max && vals.some((v, i) => !Number.isFinite(v) || v < 0 || v > f.max[i])) return;
+                    const c = f.write(vals);
+                    if (!c) return;
+                    hsv = toHsv(c);
+                    apply();
+                }));
+                inputs.forEach((input) => input.addEventListener('blur', paint));
+                nums.querySelector('.sp-pick-swap').addEventListener('click', () => {
+                    const order = Object.keys(FORMATS);
+                    pickFormat = order[(order.indexOf(pickFormat) + 1) % order.length];
+                    fields();
+                    paint();
+                });
+            }
+            function paint() {
+                const c = fromHsv(hsv);
+                sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hsv.h} 100% 50%))`;
+                Object.assign(handle.style, { left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: c });
+                hue.value = Math.round(hsv.h);
+                hue.style.setProperty('--hue', `hsl(${hsv.h} 100% 50%)`);
+                now.style.background = c;
+                sv.setAttribute('aria-valuetext', c);
+                const vals = FORMATS[pickFormat].read(c);
+                nums.querySelectorAll('input').forEach((x, i) => { if (document.activeElement !== x) x.value = vals[i]; });
+            }
+            function apply() {
+                pick(fromHsv(hsv));
+                paint();
+            }
+            const at = (e) => {
+                const r = sv.getBoundingClientRect();
+                hsv.s = clamp((e.clientX - r.left) / r.width, 0, 1);
+                hsv.v = 1 - clamp((e.clientY - r.top) / r.height, 0, 1);
+                apply();
+            };
+            sv.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                sv.focus();
+                sv.setPointerCapture(e.pointerId);
+                at(e);
+                const move = (ev) => at(ev);
+                const up = () => { sv.removeEventListener('pointermove', move); sv.removeEventListener('pointerup', up); };
+                sv.addEventListener('pointermove', move);
+                sv.addEventListener('pointerup', up);
+            });
+            sv.addEventListener('keydown', (e) => {
+                const step = e.shiftKey ? 0.1 : 0.02;
+                const d = { ArrowLeft: ['s', -step], ArrowRight: ['s', step], ArrowUp: ['v', step], ArrowDown: ['v', -step] }[e.key];
+                if (!d) return;
+                e.preventDefault();
+                hsv[d[0]] = clamp(hsv[d[0]] + d[1], 0, 1);
+                apply();
+            });
+            hue.addEventListener('input', () => { hsv.h = +hue.value; apply(); });
+            p.querySelector('.sp-pick-drop').addEventListener('click', (e) => eyedrop(e, (c) => { hsv = toHsv(c); apply(); }));
+            p.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dropping) { e.stopPropagation(); closePicker(); dot.focus(); } });
+            aside.append(p);
+            // under the dot, inside the editor
+            const a = aside.getBoundingClientRect();
+            const r = dot.getBoundingClientRect();
+            p.style.top = `${r.bottom - a.top + 8}px`;
+            p.style.left = `${clamp(r.left - a.left - 10, 8, a.width - p.offsetWidth - 8)}px`;
+            fields();
+            paint();
+        }
+        // the eyedropper: the magnifier follows the pointer until a click takes the color under it (Escape: none)
+        function eyedrop(start, done) {
+            dropping = true;
+            const lens = sampler();
+            let color = null;
+            const move = (e) => { color = colorAt(e.clientX, e.clientY); lens.show(e.clientX, e.clientY, color); };
+            move(start);
+            const off = new AbortController();
+            const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+            const finish = (keep) => {
+                off.abort();
+                lens.remove();
+                dropping = false;
+                if (keep && color) done(color);
+                // the click that took it mustn't reach the page (or the next press clears that)
+                const after = new AbortController();
+                addEventListener('click', (e) => { stop(e); after.abort(); }, { capture: true, signal: after.signal });
+                addEventListener('pointerdown', () => after.abort(), { capture: true, signal: after.signal });
+            };
+            addEventListener('pointermove', move, { capture: true, signal: off.signal });
+            addEventListener('pointerdown', (e) => { stop(e); move(e); finish(true); }, { capture: true, signal: off.signal });
+            addEventListener('keydown', (e) => { if (e.key === 'Escape') { stop(e); finish(false); } }, { capture: true, signal: off.signal });
+        }
+        // a press anywhere but the picker or a dot closes it
+        addEventListener('pointerdown', (e) => {
+            if (pickEl && !dropping && !pickEl.contains(e.target) && !e.target.closest?.('.sp-swatch')) closePicker();
+        }, true);
+
+        /* drag a category's dot onto the page to take a color from it: the point is a ring, and the color shows in a
+           circle beside it, joined by a line, so the pointer never hides it. A click still opens the browser's picker */
+        function dragColor(dot, pick) {
+            let dragged = false; // the click that ends a drag mustn't open the picker
+            dot.addEventListener('click', (e) => { if (dragged) { e.preventDefault(); dragged = false; } });
+            dot.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                dragged = false;
+                const x0 = e.clientX;
+                const y0 = e.clientY;
+                let lens = null;
+                let color = null;
+                const move = (ev) => {
+                    if (!lens) {
+                        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+                        lens = sampler();
+                        dot.setPointerCapture(ev.pointerId);
+                    }
+                    color = colorAt(ev.clientX, ev.clientY);
+                    lens.show(ev.clientX, ev.clientY, color);
+                };
+                let cancelled = false;
+                const up = (ev) => {
+                    removeEventListener('pointermove', move, true);
+                    removeEventListener('pointerup', up, true);
+                    removeEventListener('keydown', esc, true);
+                    if (!lens) return;
+                    lens.remove();
+                    dragged = true;
+                    ev.preventDefault();
+                    if (!cancelled && color) pick(color);
+                };
+                // Escape drops it: the color stays as it was
+                const esc = (ev) => {
+                    if (ev.key !== 'Escape' || !lens) return;
+                    ev.preventDefault();
+                    cancelled = true;
+                    lens.remove();
+                    removeEventListener('pointermove', move, true);
+                };
+                addEventListener('pointermove', move, true);
+                addEventListener('pointerup', up, true);
+                addEventListener('keydown', esc, true);
+            });
+        }
+        // a magnifier beside the point, not over it: a copy of the page, scaled up around the point, in a circle up and to
+        // the right (or wherever there's room), joined to a ring at the point by a line. The circle's rim is the color
+        const LENS = { r: 64, zoom: 3, off: 96 };
+        function sampler() {
+            const lens = el('div', 'slop-sampler', '<svg aria-hidden="true"><line></line></svg><i class="slop-sampler-ring"></i>'
+                + '<b class="slop-sampler-lens"><span class="slop-sampler-page"></span><i class="slop-sampler-dot"></i></b><span class="slop-sampler-hex"></span>');
+            const [line, ring, big, view, label] = ['line', '.slop-sampler-ring', '.slop-sampler-lens', '.slop-sampler-page', '.slop-sampler-hex'].map((q) => lens.querySelector(q));
+            Object.assign(big.style, { width: `${LENS.r * 2}px`, height: `${LENS.r * 2}px` });
+            const root = getComputedStyle(document.documentElement).backgroundColor;
+            const body = getComputedStyle(document.body).backgroundColor;
+            view.style.background = /rgba\([^)]*,\s*0\)|transparent/.test(body) ? root : body;
+            view.style.width = `${document.documentElement.clientWidth}px`;
+            const copy = document.body.cloneNode(true);
+            view.append(copy);
+            document.body.append(lens);
+            document.documentElement.classList.add('slop-sampling');
+            place(document.body, copy, view);
+            return {
+                show(x, y, color) {
+                    const { r, zoom, off } = LENS;
+                    const cx = x + (x > innerWidth - off - r - 8 ? -off : off);
+                    const cy = y + (y < off + r + 8 ? off : -off);
+                    Object.assign(ring.style, { left: `${x}px`, top: `${y}px` });
+                    Object.assign(big.style, { left: `${cx}px`, top: `${cy}px`, borderColor: color ?? '#fff' });
+                    view.style.transform = `translate(${r - (x + scrollX) * zoom}px, ${r - (y + scrollY) * zoom}px) scale(${zoom})`;
+                    Object.assign(label.style, { left: `${cx}px`, top: `${cy + r + 18}px` });
+                    label.textContent = color ?? '';
+                    // the line runs from the ring to the circle's rim
+                    const d = Math.hypot(cx - x, cy - y);
+                    const ex = cx - ((cx - x) / d) * (r + 3);
+                    const ey = cy - ((cy - y) / d) * (r + 3);
+                    [['x1', x], ['y1', y], ['x2', ex], ['y2', ey]].forEach(([k, v]) => line.setAttribute(k, v));
+                },
+                remove() { lens.remove(); document.documentElement.classList.remove('slop-sampling'); },
+            };
+        }
+        // the copy shows the page as it is on screen: what's fixed or sticky where it is now, panels scrolled as they are,
+        // and canvases drawn
+        function place(from, to, view) {
+            const a = document.createTreeWalker(from, NodeFilter.SHOW_ELEMENT);
+            const b = document.createTreeWalker(to, NodeFilter.SHOW_ELEMENT);
+            const pinned = [];
+            const scrolled = [];
+            for (let x = a.currentNode, y = b.currentNode; x && y; x = a.nextNode(), y = b.nextNode()) {
+                if (x.classList?.contains('slop-sampler')) break; // the magnifier itself, if it got copied
+                const pos = getComputedStyle(x).position;
+                if (pos === 'fixed' || pos === 'sticky') pinned.push([x, y]);
+                if (x.scrollTop || x.scrollLeft) scrolled.push([x, y]);
+                if (x instanceof HTMLCanvasElement && y instanceof HTMLCanvasElement) {
+                    try { y.getContext('2d').drawImage(x, 0, 0); } catch { /* a canvas it can't read */ }
+                }
+            }
+            const box = view.getBoundingClientRect();
+            pinned.forEach(([x, y]) => {
+                const want = x.getBoundingClientRect();
+                const got = y.getBoundingClientRect();
+                y.style.translate = `${want.left + scrollX - (got.left - box.left)}px ${want.top + scrollY - (got.top - box.top)}px`;
+            });
+            scrolled.forEach(([x, y]) => { y.scrollTop = x.scrollTop; y.scrollLeft = x.scrollLeft; });
+        }
+        // the color on the page at a point: a letter's color over a letter, a shape's fill, an image's pixel (when the
+        // browser lets it be read), or else the first background that isn't see-through
+        function colorAt(x, y) {
+            const els = document.elementsFromPoint(x, y);
+            const top = els[0];
+            if (!top) return null;
+            const seen = (c) => { const m = /rgba?\([^)]*?([\d.]+)\)$/.exec(c); return c && c !== 'transparent' && !(c.startsWith('rgba') && m && +m[1] === 0); };
+            if (top instanceof HTMLImageElement || top instanceof HTMLCanvasElement) {
+                try {
+                    const r = top.getBoundingClientRect();
+                    const w = top.naturalWidth ?? top.width;
+                    const h = top.naturalHeight ?? top.height;
+                    const c = Object.assign(document.createElement('canvas'), { width: 1, height: 1 }).getContext('2d');
+                    c.drawImage(top, ((x - r.left) / r.width) * w, ((y - r.top) / r.height) * h, 1, 1, 0, 0, 1, 1);
+                    const [rr, g, b, a] = c.getImageData(0, 0, 1, 1).data;
+                    if (a) return hex(`rgb(${rr}, ${g}, ${b})`);
+                } catch { /* another site's image: its pixels can't be read */ }
+            }
+            const caret = document.caretRangeFromPoint?.(x, y) ?? (() => { const p = document.caretPositionFromPoint?.(x, y); if (!p) return null; const r = document.createRange(); r.setStart(p.offsetNode, p.offset); return r; })();
+            const node = caret?.startContainer;
+            if (node?.nodeType === 3 && top.contains(node)) {
+                for (const i of [caret.startOffset - 1, caret.startOffset]) {
+                    if (i < 0 || i >= node.length || !node.data[i].trim()) continue;
+                    const r = document.createRange();
+                    r.setStart(node, i);
+                    r.setEnd(node, i + 1);
+                    const b = r.getBoundingClientRect();
+                    if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return hex(getComputedStyle(node.parentElement).color);
+                }
+            }
+            if (top instanceof SVGElement && seen(getComputedStyle(top).fill)) return hex(getComputedStyle(top).fill);
+            for (const e of els) {
+                const bg = getComputedStyle(e).backgroundColor;
+                if (seen(bg)) return hex(bg);
+            }
+            return hex(getComputedStyle(document.documentElement).backgroundColor) || '#ffffff';
+        }
+
+        // a category's own color, or (null) its default
+        function setColor(id, color) {
+            if (color) { own(id).color = color; return; }
+            const c = text._categories?.[id];
+            if (!c) return;
+            delete c.color;
+            if (!Object.keys(c).length) delete text._categories[id];
+            if (!Object.keys(text._categories).length) delete text._categories;
         }
 
         /* marking text: the focused field gets a row of categories. A selection, or the whole text, becomes theirs */
@@ -1176,6 +1682,8 @@ const Slop = (() => {
             $('.sp-big b').textContent = percent(page.letters ? (page.counts.ai ?? 0) / page.letters : 0);
             $('.sp-words').textContent = count(page.allWords, 'word');
             aside.querySelectorAll('.sp-seg button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.show === shows())));
+            const revert = $('.sp-cat-revert');
+            if (revert) revert.hidden = !Object.values(text._categories ?? {}).some((c) => c.color);
             aside.querySelectorAll('.sp-cat').forEach((row) => {
                 row.querySelector('.sp-cat-pct').textContent = percent(page.letters ? (page.counts[row.dataset.id] ?? 0) / page.letters : 0);
             });
@@ -1366,7 +1874,9 @@ const Slop = (() => {
             if (stale) { status('This page is out of date: reload it to save (copy any edits first)', 'error'); return; }
             const body = JSON.stringify(text);
             if (mode === 'local') {
-                store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, text: JSON.parse(body) }));
+                // with the page as it was published, so the copy can be carried over to the author's next version
+                const kept = store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, baseText: JSON.parse(original), text: JSON.parse(body) }));
+                if (!kept) { status("Couldn't save in this browser", 'error'); return; }
                 saved = JSON.parse(body);
                 undo = null;
                 keepDraft();
@@ -1414,7 +1924,7 @@ const Slop = (() => {
         addEventListener('beforeunload', (e) => { if (busy || unsaved()) { e.preventDefault(); e.returnValue = ''; } });
         // a reload keeps what isn't saved, in this tab, still unsaved: a page in a frame (or a browser that skips the
         // prompt) can't ask before it goes. Kept only while the page's version is the one it was based on
-        const DRAFT = `slop-draft:${location.pathname}`;
+        const DRAFT = `slop-draft:${pageKey()}`;
         const keepDraft = () => {
             if (unsaved() && !stale) session.set(DRAFT, JSON.stringify({ base: saved.version, text }));
             else session.drop(DRAFT);
@@ -1520,7 +2030,7 @@ const Slop = (() => {
             document.documentElement.classList.toggle('slop-editing', on);
             editing = on;
             paintShow();
-            if (!on) { mark(false); unreveal(); return; }
+            if (!on) { mark(false); unreveal(); closePicker(); return; }
             place();
             render();
         };
@@ -1567,7 +2077,9 @@ const Slop = (() => {
     }
 
     // set things up once the page has filled in Slop.vars. Options: code (the class `code` renders with),
-    // edit: 'local' (an editor anyone can use, saving in their browser; under `slop-editor edit` it saves into the file)
+    // edit: 'local' (an editor anyone can use, saving in their browser; under `slop-editor edit` it saves into the file),
+    // key (the name the browser editor saves under, for a host that gives each version of the page an address of its
+    // own; the page's path otherwise)
     function start(options = {}) {
         Object.assign(config, options);
         fill();
@@ -1578,12 +2090,20 @@ const Slop = (() => {
         [document.documentElement, document.body].forEach((x) => watch.observe(x, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }));
         matchMedia('(prefers-color-scheme: dark)').addEventListener('change', theme);
         setMeter(store.get('slop-o-meter') !== 'off'); // on unless this reader turned it off
-        // the browser editor: what this visitor changed last time, if the page hasn't changed since
+        // the browser editor: what this visitor changed last time. If the author has published a new version since,
+        // their changes win and the visitor's stay everywhere else (a copy saved before 0.4 has no baseText, so it's dropped)
         const local = () => {
             if (options.edit !== 'local') return;
+            const key = `slop-text:${pageKey()}`;
             try {
-                const saved = JSON.parse(store.get(`slop-text:${location.pathname}`));
+                const saved = JSON.parse(store.get(key));
                 if (saved?.base === text.version) { text = saved.text; applyColors(); changed(); }
+                else if (saved?.baseText && saved.text) {
+                    text = rebase(saved.baseText, saved.text, text);
+                    store.set(key, JSON.stringify({ base: text.version, baseText: JSON.parse(original), text }));
+                    applyColors();
+                    changed();
+                }
             } catch { /* nothing saved */ }
             ed = editor('local');
         };
