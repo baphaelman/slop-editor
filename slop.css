@@ -74,7 +74,16 @@ html.slop-dark {
 .sp-status[data-kind="dirty"] { color: var(--_ink-2); }
 .sp-status[data-kind="error"] { color: #d0453a; }
 .sp-link { padding: 0; border: 0; background: none; color: var(--_accent) !important; font: 600 0.78rem var(--_font); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-.sp-save { flex: none; margin-left: auto; height: 30px; padding: 0 13px; border-radius: 8px; border: 1px solid var(--_accent); background: var(--_accent); color: var(--_bg) !important; font: 600 0.82rem var(--_font); font-variant-numeric: tabular-nums; cursor: pointer; }
+.sp-colors {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; margin-left: auto; padding: 0 10px 0 7px; border-radius: 8px;
+  border: 1px solid var(--_rule); background: none; font: 600 0.78rem var(--_font); color: var(--_ink-3) !important; cursor: pointer;
+}
+.sp-colors:hover { border-color: var(--_ink-3); }
+.sp-colors .sp-switch { background: var(--_rule); }
+.sp-colors[aria-checked="true"] { color: var(--_ink) !important; }
+.sp-colors[aria-checked="true"] .sp-switch { background: var(--slop-c-ai, var(--_accent)); }
+.sp-colors[aria-checked="true"] .sp-switch::after { transform: translateX(10px); }
+.sp-save { flex: none; height: 30px; padding: 0 13px; border-radius: 8px; border: 1px solid var(--_accent); background: var(--_accent); color: var(--_bg) !important; font: 600 0.82rem var(--_font); font-variant-numeric: tabular-nums; cursor: pointer; }
 .sp-save:hover:not(:disabled) { filter: brightness(1.1); }
 .sp-save:disabled { border-color: var(--_rule); background: none; color: var(--_ink-3) !important; cursor: default; }
 .sp-revert { flex: none; padding: 0 2px; border: 0; background: none; font: 600 0.72rem var(--_font); color: var(--_ink-3) !important; text-decoration: underline; text-decoration-color: var(--_rule); text-underline-offset: 2px; cursor: pointer; }
@@ -93,11 +102,6 @@ html.slop-dark {
 
 /* the whole page: how much is slop, the page's switch, and the categories */
 .sp-cover { display: grid; gap: 10px; padding: 0 16px 14px; }
-.sp-cover-row { display: flex; align-items: center; gap: 10px; }
-.sp-big { font-size: 0.9rem; color: var(--_ink-2); }
-.sp-big b { font: 700 1.55rem/1 var(--_font); color: var(--slop-c-ai, var(--_accent)); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.sp-words { margin-right: auto !important; font-size: 0.78rem; color: var(--_ink-3); font-variant-numeric: tabular-nums; }
-.sp-cover-row .sp-pie { width: 22px; height: 22px; }
 .sp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
 .sp-cat { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px 0 4px; border: 1px solid var(--_rule); border-radius: 99px; font-size: 0.78rem; }
 .sp-cat { cursor: pointer; }
@@ -164,6 +168,8 @@ html.slop-dark {
 /* sections */
 .sp-group { border-bottom: 1px solid var(--_rule); }
 .sp-group summary { display: flex; align-items: center; gap: 8px; padding: 10px 4px; cursor: pointer; list-style: none; }
+/* an open section's name stays at the top while its texts scroll, so it can be closed from anywhere in it */
+.sp-group[open] > summary { position: sticky; top: -8px; z-index: 3; margin: 0 -12px; padding: 10px 16px; background: var(--_bg); }
 .sp-group summary::-webkit-details-marker { display: none; }
 .sp-group summary::before { content: ""; flex: none; width: 6px; height: 6px; margin: 0 3px 0 1px; border: solid var(--_ink-3); border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform .15s; }
 .sp-group[open] summary::before { transform: rotate(45deg) translate(-2px, 0); }

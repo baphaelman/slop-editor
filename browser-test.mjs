@@ -194,6 +194,85 @@ try {
         assert.deepEqual(await get(p, 'how.p1'), [{ data: 'The' }, ' agent wrote this.']);
     });
 
+    await check('the row says "Mark selection as" while a selection is still being dragged out', async () => {
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.press('End');
+        assert.equal(await p.textContent('.sp-assign-label'), 'Mark all as');
+        // a drag fires selectionchange as it goes, and its select and pointerup only at the end. Read the row before those
+        assert.equal(await ta.evaluate((t) => {
+            t.selectionStart = 0;
+            t.dispatchEvent(new Event('selectionchange'));
+            return document.querySelector('.sp-assign-label').textContent;
+        }), 'Mark selection as');
+        await ta.press('End');
+    });
+
+    await check('words copied from a text keep their authors when pasted; from anywhere else, they\'re mine', async () => {
+        const ta = p.locator(`${field('how.p2')} textarea`);
+        await ta.click();
+        // headless Chrome has no clipboard: the copy and the paste are events with a DataTransfer of their own, and the
+        // paste puts the words in as the browser would
+        const paste = (t, d) => {
+            t.dispatchEvent(new ClipboardEvent('paste', { clipboardData: d, bubbles: true, cancelable: true }));
+            const words = d.getData('text/plain');
+            const at = t.value.length;
+            t.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertFromPaste', bubbles: true }));
+            t.setRangeText(words, at, at, 'end');
+            t.dispatchEvent(new InputEvent('input', { inputType: 'insertFromPaste', bubbles: true }));
+        };
+        await ta.evaluate((t, src) => {
+            const paste = eval(src);
+            t.setSelectionRange(0, 25); // "There are {n} things, I p"
+            const d = new DataTransfer();
+            t.dispatchEvent(new ClipboardEvent('copy', { clipboardData: d, bubbles: true, cancelable: true }));
+            t.setSelectionRange(t.value.length, t.value.length);
+            paste(t, d);
+        }, `(${paste})`);
+        assert.deepEqual(await get(p, 'how.p2'), ['There are {n} things, ', { me: 'I promise' }, '.There are {n} things, ', { me: 'I p' }]);
+        await ta.evaluate((t, src) => {
+            const paste = eval(src);
+            t.value = t.value.slice(0, 32);
+            t.dispatchEvent(new InputEvent('input', { inputType: 'deleteContentBackward', bubbles: true }));
+            const d = new DataTransfer();
+            d.setData('text/plain', ' Elsewhere');
+            paste(t, d);
+        }, `(${paste})`);
+        assert.deepEqual(await get(p, 'how.p2'), ['There are {n} things, ', { me: 'I promise' }, '.', { me: ' Elsewhere' }]);
+        await ta.evaluate((t) => { t.value = t.value.slice(0, 32); t.dispatchEvent(new InputEvent('input', { inputType: 'deleteContentBackward', bubbles: true })); });
+        assert.deepEqual(await get(p, 'how.p2'), ['There are {n} things, ', { me: 'I promise' }, '.']);
+    });
+
+    await check('the editor\'s Colors switch turns the page\'s colors off and on; its text boxes keep theirs', async () => {
+        const on = () => p.evaluate(() => document.documentElement.classList.contains('slop-on'));
+        assert.equal(await p.$eval('.sp-colors', (b) => b.getAttribute('aria-checked')), 'true');
+        assert.ok(await on());
+        await p.click('.sp-colors');
+        assert.ok(!(await on()));
+        const ink = await p.evaluate(() => getComputedStyle(document.body).color);
+        assert.notEqual(await p.$eval(`${field('how.p2')} .sp-mirror .slop-me`, (x) => getComputedStyle(x).color), ink);
+        assert.equal(await p.$eval('.slop-meter-btn', (b) => b.getAttribute('aria-pressed')), 'false'); // the page's switch agrees
+        await p.click('.slop-meter-btn');
+        assert.ok(await on());
+        assert.equal(await p.$eval('.sp-colors', (b) => b.getAttribute('aria-checked')), 'true');
+    });
+
+    await check('an open section\'s name stays at the top of the panel; closing it there goes back to its start', async () => {
+        await p.setViewportSize({ width: 1280, height: 420 });
+        await all(p);
+        const sum = p.locator('.sp-group[data-group="how"] > summary');
+        await p.$eval('.sp-body', (b) => { b.scrollTop += b.querySelector('[data-group="how"]').getBoundingClientRect().top - b.getBoundingClientRect().top + 120; });
+        const top = await p.$eval('.sp-body', (b) => b.getBoundingClientRect().top);
+        assert.ok(Math.abs((await sum.boundingBox()).y - top) < 1);
+        await sum.locator('.sp-gname').click();
+        await p.waitForFunction((t) => {
+            const det = document.querySelector('.sp-group[data-group="how"]');
+            return !det.open && det.getBoundingClientRect().top >= t - 1;
+        }, top, { timeout: 3000 });
+        await sum.locator('.sp-gname').click();
+        await p.setViewportSize({ width: 1280, height: 860 });
+    });
+
     await check('Revert goes back to the last save; Save saves', async () => {
         assert.match(await p.textContent('.sp-save'), /^Save \d/);
         await p.locator(`${field('how.p1')} .sp-revert`).click();

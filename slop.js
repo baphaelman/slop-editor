@@ -101,6 +101,8 @@ const Slop = (() => {
     const reslop = (value) => reattribute(value, 'ok', 'ai');
     // characters start to end (of the plain text) marked as one author's
     const assign = (value, start, end, to) => fromChars(plain(value), authorsByChar(value).map((a, i) => (i >= start && i < end ? to : a)));
+    // characters from `start` on given these authors, one each (what was pasted keeps who wrote it), the text unchanged
+    const overlay = (value, start, authors) => fromChars(plain(value), authorsByChar(value).map((a, i) => authors[i - start] ?? a));
 
     const LINK = /\[([^\]]+)\]\(([^)\s]+)\)/y;
     const VAR = /\{(\w+)\}/y;
@@ -310,7 +312,7 @@ const Slop = (() => {
         return out;
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
+    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, overlay, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -626,13 +628,15 @@ const Slop = (() => {
     const store = storage(() => localStorage);
     const session = storage(() => sessionStorage); // this tab only: the unsaved draft
     // what readers see is the page's choice, "nothing" unless it says otherwise. While the editor is open, its
-    // author sees the colors whatever readers get
+    // author sees the colors whatever readers get, until they switch them off to compare (editColors)
     const SHOW = ['nothing', 'pie', 'colors'];
     const shows = () => (SHOW.includes(text._show) ? text._show : 'nothing');
     const meters = [];
     const built = new WeakMap(); // element → its meter
     let meterOn = false;
     let editing = false;
+    let editColors = true;
+    let editSwitch = null; // the editor's own Slop-o-meter switch, in its header
     function setMeter(on) {
         meterOn = on;
         paintShow();
@@ -643,7 +647,8 @@ const Slop = (() => {
     const sectionOf = (m) => (m.at && m.el.parentElement ? m.el.closest('[data-slop-section]') ?? m.el.parentElement : document.documentElement);
     function paintShow() {
         const mode = shows();
-        document.documentElement.classList.toggle('slop-on', editing || (mode === 'colors' && meterOn));
+        document.documentElement.classList.toggle('slop-on', editing ? editColors : mode === 'colors' && meterOn);
+        editSwitch?.setAttribute('aria-checked', String(editColors));
         meters.forEach((m) => {
             m.el.dataset.show = mode;
             const section = sectionOf(m);
@@ -655,7 +660,7 @@ const Slop = (() => {
                 section.classList.toggle('slop-on', own === true);
                 section.classList.toggle('slop-off', own === false);
             }
-            m.btn.setAttribute('aria-pressed', String(m.own ?? meterOn));
+            m.btn.setAttribute('aria-pressed', String(editing ? editColors : m.own ?? meterOn));
         });
     }
     function paintMeters() {
@@ -683,6 +688,7 @@ const Slop = (() => {
             + '<span class="slop-meter-key"><span class="slop-pie" role="img"></span><span class="slop-legend"></span></span>';
         const m = { el, at: el.dataset.slopMeter || '', own: null, section: null, btn: el.querySelector('button'), pie: el.querySelector('.slop-pie'), legend: el.querySelector('.slop-legend') };
         m.btn.addEventListener('click', () => {
+            if (editing) { editColors = !editColors; paintShow(); return; } // the editor's switch, while it's open
             const on = !(m.own ?? meterOn);
             if (m.at) { m.own = on; paintShow(); return; } // only the page-wide choice is remembered
             setMeter(on);
@@ -760,11 +766,11 @@ const Slop = (() => {
           <header class="sp-head" title="Drag to move, or drag an edge to resize. Double-click to put it back">
             <span class="sp-grip" aria-hidden="true"></span>
             <div><h2>Edit text</h2><p class="sp-status" role="status" aria-live="polite"></p></div>
+            <button type="button" class="sp-colors" role="switch" title="Slop-o-meter: color the page's words by who wrote them. Only for you, while you edit"><span class="sp-switch" aria-hidden="true"></span>Colors</button>
             <button type="button" class="sp-save" title="Save (⌘S)" disabled>Saved</button>
             <button type="button" class="sp-close" aria-label="Close the editor">×</button>
           </header>
           <div class="sp-cover">
-            <div class="sp-cover-row"><p class="sp-big"><b></b> slop</p><p class="sp-words"></p></div>
             <div class="sp-cats"></div>
             <div class="sp-show"><span>Readers see</span><div class="sp-seg" role="radiogroup" aria-label="What readers see">
               <button type="button" role="radio" data-show="nothing" title="No sign of the slop editor on the published page">Nothing</button>
@@ -786,8 +792,9 @@ const Slop = (() => {
         const $ = (sel) => aside.querySelector(sel);
         const body = $('.sp-body');
         const statusEl = $('.sp-status');
-        const pageControl = control(() => entries().map(([p]) => p), 'the whole page');
-        $('.sp-cover-row').append(pageControl);
+        aside.classList.add('slop-on'); // the text boxes keep their colors when the page's are off
+        editSwitch = $('.sp-colors');
+        editSwitch.addEventListener('click', () => { editColors = !editColors; paintShow(); });
 
         function status(msg, kind = '', action) {
             statusEl.textContent = msg;
@@ -1383,6 +1390,32 @@ const Slop = (() => {
         const assignLabel = (input) => {
             if (assignEl.firstChild) assignEl.firstChild.textContent = input.selectionStart === input.selectionEnd ? 'Mark all as' : 'Mark selection as';
         };
+        // while a selection is being dragged out too, so the row doesn't change under the pointer once it's let go
+        document.addEventListener('selectionchange', () => {
+            const a = document.activeElement;
+            if (a?.tagName === 'TEXTAREA' && assignEl.parentNode?.contains(a)) assignLabel(a);
+        });
+
+        /* copying a text's words keeps who wrote them: pasted into a text (here, or in another page's editor), they keep
+           their authors. Words from anywhere else are mine, as typed */
+        const CLIP = 'application/x-slop-editor';
+        let clip = null; // {words, authors}, the last copied here: for a browser that keeps only plain text
+        function copyOut(e, input, path) {
+            const [s, t] = [input.selectionStart, input.selectionEnd];
+            if (s === t || !e.clipboardData) return;
+            clip = { words: input.value.slice(s, t), authors: authorsByChar(get(path)).slice(s, t) };
+            e.preventDefault();
+            e.clipboardData.setData('text/plain', clip.words);
+            e.clipboardData.setData(CLIP, JSON.stringify(clip));
+            if (e.type === 'cut') document.execCommand('delete'); // as an edit, so ⌘Z brings it back
+        }
+        function pastedIn(e) {
+            const words = (e.clipboardData?.getData('text/plain') ?? '').replace(/\r\n?/g, '\n');
+            let c = clip;
+            try { c = JSON.parse(e.clipboardData.getData(CLIP)) ?? clip; } catch { /* plain text only */ }
+            if (!c || c.words !== words || !Array.isArray(c.authors) || c.authors.length !== words.length) return null;
+            return { words, authors: c.authors.map((a) => (typeof a === 'string' && a ? a : 'me')) };
+        }
 
         /* the views */
         const setOf = (path) => sets.find((s) => s.paths.includes(path));
@@ -1462,10 +1495,15 @@ const Slop = (() => {
             input.addEventListener('beforeinput', () => { input.at = [input.selectionStart, input.selectionEnd]; });
             input.addEventListener('input', (e) => {
                 const restoring = /^history(Undo|Redo)$/.test(e.inputType);
-                edit(paths(), input, restoring, restoring || e.isComposing || /Composition/.test(e.inputType) ? undefined : input.at);
+                const pasted = e.inputType === 'insertFromPaste' ? input.pasted : null;
+                edit(paths(), input, restoring, restoring || e.isComposing || /Composition/.test(e.inputType) ? undefined : input.at, pasted);
                 input.at = undefined;
+                input.pasted = null;
             });
-            ['select', 'keyup', 'pointerup'].forEach((t) => input.addEventListener(t, () => assignLabel(input)));
+            input.addEventListener('copy', (e) => copyOut(e, input, paths()[0]));
+            input.addEventListener('cut', (e) => copyOut(e, input, paths()[0]));
+            input.addEventListener('paste', (e) => { input.pasted = pastedIn(e); });
+            ['select', 'selectionchange', 'keyup', 'pointerup'].forEach((t) => input.addEventListener(t, () => assignLabel(input)));
             input.addEventListener('focus', () => { focus(path, all, input, wrap); showAssign(wrap, input, paths()); });
             input.addEventListener('blur', () => {
                 mark(false);
@@ -1495,7 +1533,11 @@ const Slop = (() => {
             det.querySelector('.sp-gname').after(ctl.pie);
             det.querySelector('summary').append(ctl);
             det.addEventListener('toggle', () => {
-                if (det.open) { state.open.add(key); det.querySelectorAll('textarea').forEach(grow); } else state.open.delete(key);
+                if (det.open) { state.open.add(key); det.querySelectorAll('textarea').forEach(grow); return; }
+                state.open.delete(key);
+                // closed from its name stuck at the top: back to where the section starts
+                const above = det.getBoundingClientRect().top - body.getBoundingClientRect().top;
+                if (above < 0) body.scrollTop += above;
             });
             paths.forEach((p) => det.append(field(p)));
             if (state.tab === 'all') listRows(key, det);
@@ -1625,7 +1667,7 @@ const Slop = (() => {
 
         function render() {
             FLAGS.forEach((name) => flag(name)); // the elements pointed at may be gone
-            controls = [controls.find((c) => c.el === pageControl)];
+            controls = [];
             sets = repeats(entries());
             groupKeys().forEach((k) => { if (!state.known.has(k)) { state.known.add(k); state.open.add(k); } });
             renderCats();
@@ -1679,8 +1721,6 @@ const Slop = (() => {
             const cats = categories();
             const all = entries();
             const page = makeup(all.map(([, v]) => v));
-            $('.sp-big b').textContent = percent(page.letters ? (page.counts.ai ?? 0) / page.letters : 0);
-            $('.sp-words').textContent = count(page.allWords, 'word');
             aside.querySelectorAll('.sp-seg button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.show === shows())));
             const revert = $('.sp-cat-revert');
             if (revert) revert.hidden = !Object.values(text._categories ?? {}).some((c) => c.color);
@@ -1815,12 +1855,15 @@ const Slop = (() => {
             past.set(p, list.slice(-200));
         }
         const recall = (p, words) => past.get(p)?.findLast((v) => plain(v) === words);
-        function edit(paths, input, restoring, at) {
+        // `pasted`: words copied from a text, with their authors, now at `at`
+        function edit(paths, input, restoring, at, pasted) {
             undo = null;
             const f = state.focus;
+            const keep = pasted && at && input.value.startsWith(pasted.words, at[0]);
             [...paths, ...(f?.linked ?? [])].forEach((p) => {
                 remember(p);
-                set(p, applyEdit(get(p), input.value, restoring ? recall(p, input.value) : undefined, at));
+                const next = applyEdit(get(p), input.value, restoring ? recall(p, input.value) : undefined, at);
+                set(p, keep ? overlay(next, at[0], pasted.authors) : next);
                 remember(p);
             });
             grow(input);
