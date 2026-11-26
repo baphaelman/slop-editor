@@ -50,6 +50,12 @@ test('marking a stretch as a category, built-in or the page\'s own', () => {
     assert.deepEqual(Slop.applyEdit([{ bob: 'Hello' }], 'Hello!'), [{ bob: 'Hello' }, { me: '!' }]);
 });
 
+test('pasted words keep the authors they were copied with', () => {
+    const pasted = Slop.applyEdit(['Hi. ', { me: 'Me.' }], 'Hi. Me.AI m');
+    assert.deepEqual(Slop.overlay(pasted, 7, ['ai', 'ai', 'ai', 'me']), ['Hi. ', { me: 'Me.' }, 'AI ', { me: 'm' }]);
+    assert.equal(Slop.overlay('all AI', 0, ['ai']), 'all AI');
+});
+
 test('makeup counts every category, data included', () => {
     const m = Slop.makeup([['ab ', { me: 'cd' }, { ok: 'e' }, { bob: 'fg' }, { data: 'h' }, '{n}']]);
     assert.deepEqual(m.counts, { ai: 2, me: 2, ok: 1, bob: 2, data: 1 });
