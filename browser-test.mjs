@@ -35,7 +35,7 @@ const page = (text) => `<!doctype html><html><head><meta charset="utf-8"><title>
   const draw = () => { const n = document.getElementById('note'); if (showNote) n.dataset.slop = 'how.note'; else { n.removeAttribute('data-slop'); n.textContent = ''; } Slop.fill(); };
   Slop.reveal('how.note', () => { showNote = true; draw(); return () => { showNote = false; draw(); }; });
   Slop.onChange(draw);
-  Slop.start(location.protocol === 'file:' ? { edit: 'local' } : {});
+  Slop.start(location.protocol === 'file:' && location.hash !== '#read' ? { edit: 'local' } : {}); // #read: as readers see it
 </script></body></html>`;
 
 // lists the page didn't mark: one that is, scroll steps (data-b), paragraphs in two parents, and one opted out
@@ -80,6 +80,11 @@ async function all(p) {
     await p.click('.sp-tabs [data-tab="all"]');
     for (const det of await p.$$('.sp-group:not([open]) summary .sp-gname')) await det.click();
 }
+// the full panel: the editor opens as a bar unless the panel was open last time
+async function panel(p) {
+    await p.waitForSelector('.slop-panel');
+    if (await p.$eval('.slop-panel', (x) => x.classList.contains('sp-mini'))) await p.click('.sp-mode');
+}
 let passed = 0;
 async function check(name, fn) {
     await fn();
@@ -90,7 +95,7 @@ async function check(name, fn) {
 try {
     // ---------- the browser editor (file://), which saves in localStorage ----------
     const local = await fixture();
-    let p = await open(`file://${local}`);
+    let p = await open(`file://${local}#read`);
 
     await check('readers see what the page chose; the meter starts on', async () => {
         assert.equal(await p.$eval('.slop-meter', (m) => m.dataset.show), 'colors');
@@ -139,7 +144,9 @@ try {
         assert.ok(await p.evaluate(() => { let n = 0; const off = Slop.onChange(() => n++); off(); return typeof off === 'function'; }));
     });
 
-    await p.click('.slop-edit-btn');
+    await p.close();
+    p = await open(`file://${local}`);
+    await panel(p);
     await check('the editor opens on repeated text that still has slop', async () => {
         assert.equal(await p.$eval('.sp-tabs [aria-selected="true"]', (t) => t.dataset.tab), 'repeats');
     });
@@ -284,7 +291,7 @@ try {
     });
 
     await check('a reload asks first, and keeps the unsaved changes either way', async () => {
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         const ta = p.locator(`${field('how.title')} textarea`);
         await ta.click();
@@ -300,11 +307,11 @@ try {
         await p.click('.sp-status .sp-link'); // Discard
         assert.deepEqual(await get(p, 'how.title'), [{ ok: 'How it works' }]);
         await p.reload();
-        assert.ok(await p.$eval('.slop-panel', (x) => x.hidden)); // nothing kept, so the editor stays closed
+        assert.doesNotMatch(await p.textContent('.sp-status'), /Unsaved/); // nothing kept
     });
 
     await check('a hidden text is shown on the page while it\'s edited', async () => {
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         assert.equal(await p.textContent('#note'), '');
         await p.click(`${field('how.note')} .sp-unseen`);
@@ -564,11 +571,104 @@ try {
     });
     await p.close();
 
+    // ---------- editing on the page ----------
+    p = await open(`file://${await fixture()}`);
+    await check('on the page: the panel shrinks to a bar, and a text is typed into where it is', async () => {
+        assert.ok(await p.$eval('.slop-panel', (x) => !x.hidden && x.classList.contains('sp-mini'))); // open, as a bar
+        assert.equal(await p.$('.slop-edit-btn, .sp-close'), null);
+        await p.click('[data-slop="how.p1"]');
+        await p.keyboard.press('Meta+ArrowDown');
+        await p.keyboard.type(' Mine*');
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: ' Mine\\*' }]);
+        assert.equal(await p.textContent('[data-slop="how.p1"]'), 'The agent wrote this. Mine*');
+        assert.ok(await p.$eval('.slop-float', (x) => !x.hidden));
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('on the page: Enter starts a paragraph, Backspace at its start joins it back', async () => {
+        await p.keyboard.press('Enter');
+        await p.keyboard.type('Two');
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: '\n\nTwo' }]);
+        assert.equal(await p.evaluate(() => document.activeElement.dataset.slopMore), 'how.p1');
+        for (let i = 0; i < 4; i++) await p.keyboard.press('Backspace');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        assert.equal(await p.evaluate(() => document.activeElement.dataset.slop), 'how.p1');
+    });
+
+    await check('on the page: a {name} is deleted whole, a link isn\'t followed, and marking works', async () => {
+        await p.$eval('[data-slop="how.p2"] [data-slop-v]', (x) => {
+            const r = document.createRange();
+            r.setStartAfter(x);
+            x.closest('[contenteditable="true"]').focus();
+            getSelection().removeAllRanges();
+            getSelection().addRange(r);
+        });
+        await p.keyboard.press('Backspace');
+        assert.deepEqual(await get(p, 'how.p2'), ['There are  things, ', { me: 'I promise' }, '.']);
+        await p.click('[data-slop="nav.how"]');
+        assert.ok(!p.url().endsWith('#'));
+        await p.keyboard.press('Home');
+        await p.keyboard.press('Shift+ArrowRight');
+        await p.waitForFunction(() => document.querySelector('.slop-float .sp-assign-label').textContent === 'Mark selection as');
+        await p.click('.slop-float .sp-as:has-text("Data")');
+        assert.equal(JSON.stringify(await get(p, 'nav.how')).includes('"data"'), true);
+    });
+
+    await check('on the page: a + in the row makes a category, with whose words it means, and marks the selection', async () => {
+        await p.click('[data-slop="how.title"]');
+        await p.keyboard.press('Home');
+        await p.keyboard.press('Shift+ArrowRight');
+        await p.keyboard.press('Shift+ArrowRight');
+        await p.keyboard.press('Shift+ArrowRight');
+        await p.click('.slop-float .sp-as-new');
+        await p.fill('.slop-float .sp-newcat-name', 'Editor');
+        await p.keyboard.press('Enter');
+        await p.keyboard.type('Our copy editor');
+        await p.keyboard.press('Enter');
+        assert.deepEqual(await p.evaluate(() => Slop.text._categories.editor), { label: 'Editor', color: '#e0662b', about: 'Our copy editor' });
+        assert.deepEqual(await get(p, 'how.title'), [{ editor: 'How' }, ' it works']);
+        assert.ok(await p.$('.slop-float .sp-as:has-text("Editor")'));
+    });
+
+    await check('on the page: ⌘B, ⌘I and ⌘E restyle the selection, ⌘K links it; the words keep their authors', async () => {
+        await p.click('[data-slop="how.p1"]');
+        await p.keyboard.press('Meta+ArrowUp');
+        for (let i = 0; i < 3; i++) await p.keyboard.press('Shift+ArrowRight');
+        await p.keyboard.press('Meta+b');
+        assert.equal(await get(p, 'how.p1'), '**The** agent wrote this.');
+        assert.equal(await p.textContent('[data-slop="how.p1"] strong'), 'The');
+        await p.keyboard.press('Meta+b');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        await p.keyboard.press('Meta+k');
+        await p.fill('.slop-float .sp-linkform input', 'example.com');
+        await p.keyboard.press('Enter');
+        assert.equal(await get(p, 'how.p1'), '[The](https://example.com) agent wrote this.');
+        await p.keyboard.press('Meta+k');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        await p.keyboard.press('Meta+i');
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('with the panel open, a text on the page is typed into, and its box follows', async () => {
+        await p.click('.sp-mode');
+        assert.ok(await p.$eval('.slop-panel', (x) => !x.classList.contains('sp-mini')));
+        await p.click('[data-slop="how.p1"]');
+        await p.keyboard.press('Meta+ArrowDown');
+        await p.keyboard.type(' Yes.');
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: ' Yes.' }]);
+        assert.equal(await p.$eval(`${field('how.p1')} textarea`, (t) => t.value), 'The agent wrote this. Yes.');
+        await p.click('.sp-mode');
+        assert.ok(await p.$eval('.slop-panel', (x) => x.classList.contains('sp-mini')));
+    });
+    await p.close();
+
     // ---------- the browser editor after the author publishes a new version ----------
     const republished = await fixture();
     p = await open(`file://${republished}`);
     await check('edits saved in the browser survive a new version: the author\'s changes win, the rest stays', async () => {
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         for (const at of ['how.p1', 'how.title']) {
             const ta = p.locator(`${field(at)} textarea`);
@@ -598,7 +698,7 @@ try {
     });
     await check('a save the browser refuses says so', async () => {
         await p.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('blocked'); }; });
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         await p.click(`${field('how.p1')} .sp-toggle`);
         await p.click('.sp-save');
@@ -612,7 +712,7 @@ try {
     await writeFile(lists, listsPage(LISTS));
     p = await open(`file://${lists}`);
     await check('a group\'s paragraphs in alike elements with one parent are a list without marking', async () => {
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         const plus = (at) => p.$$eval(`${field(at)} .sp-insert`, (xs) => xs.length);
         assert.equal(await plus('auto.p1'), 1);
@@ -623,12 +723,12 @@ try {
         await p.click(`${field('auto.p1')} .sp-insert`);
         await p.keyboard.insertText('Added.');
         const shown = () => p.$$eval('#auto > *', (xs) => xs.map((x) => `${x.tagName}.${[...x.classList].filter((c) => !c.startsWith('slop-')).join(' ')}:${x.textContent}`));
-        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        await p.waitForFunction(() => [...document.querySelectorAll('#auto > p')].some((x) => x.textContent === 'Added.'));
         assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
         await p.click('.sp-save');
         // the page still has two of them; the saved one is drawn in its place
         await p.reload();
-        await p.waitForFunction(() => document.querySelectorAll('#auto > p').length === 3);
+        await p.waitForFunction(() => [...document.querySelectorAll('#auto > p')].some((x) => x.textContent === 'Added.'));
         assert.deepEqual(await shown(), ['H2.:Unmarked', 'P.lede:One.', 'P.lede:Added.', 'P.lede:Two.', 'ASIDE.:Not a text.']);
         assert.equal(await p.$$eval('#steps > p, #off > p', (xs) => xs.length), 4);
     });
@@ -640,7 +740,7 @@ try {
         const first = await fixture();
         await writeFile(first, named(LISTS));
         p = await open(`file://${first}`);
-        await p.click('.slop-edit-btn');
+        await panel(p);
         await all(p);
         await p.click(`${field('auto.title')} .sp-toggle`);
         await p.click('.sp-save');
@@ -664,7 +764,7 @@ try {
         p = await open(url);
         const stale = await open(url);
         await check('Save writes the file and bumps its version; a stale tab can\'t overwrite it', async () => {
-            await p.click('.slop-edit-btn');
+            await panel(p);
             await all(p);
             await p.click(`${field('how.p1')} .sp-toggle`);
             assert.equal((await block(file)).version, 1); // nothing written before Save
@@ -673,7 +773,7 @@ try {
             const saved = await block(file);
             assert.equal(saved.version, 2);
             assert.deepEqual(saved.how.p1, [{ ok: 'The agent wrote this.' }]);
-            await stale.click('.slop-edit-btn');
+            await panel(stale);
             await all(stale);
             await stale.click(`${field('how.title')} .sp-toggle`);
             await stale.click('.sp-save');

@@ -44,16 +44,9 @@ html.slop-dark {
 .slop-key i { width: 8px; height: 8px; border-radius: 50%; }
 
 /* ---------- the editor ---------- */
-.slop-edit-btn, .slop-panel { font-family: var(--_font); color: var(--_ink); -webkit-font-smoothing: antialiased; }
-.slop-edit-btn, .slop-panel *, .slop-panel { box-sizing: border-box; }
-.slop-edit-btn {
-  position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); z-index: 2147483000;
-  display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px 10px 12px; border-radius: 99px;
-  border: 1px solid var(--_accent); background: var(--_bg); color: var(--_accent); font: 600 0.88rem var(--_font); cursor: pointer; box-shadow: var(--_shadow);
-}
-.slop-edit-btn::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--slop-c-ai, var(--_accent)); }
-.slop-edit-btn:hover { background: color-mix(in srgb, var(--_accent) 10%, var(--_bg)); }
-.slop-edit-btn[hidden], .slop-panel[hidden], .slop-panel [hidden] { display: none !important; }
+.slop-panel { font-family: var(--_font); color: var(--_ink); -webkit-font-smoothing: antialiased; }
+.slop-panel *, .slop-panel { box-sizing: border-box; }
+.slop-panel[hidden], .slop-panel [hidden] { display: none !important; }
 
 .slop-panel {
   position: fixed; top: 12px; right: 12px; bottom: 12px; z-index: 2147483000; width: min(420px, calc(100vw - 24px));
@@ -88,8 +81,6 @@ html.slop-dark {
 .sp-save:disabled { border-color: var(--_rule); background: none; color: var(--_ink-3) !important; cursor: default; }
 .sp-revert { flex: none; padding: 0 2px; border: 0; background: none; font: 600 0.72rem var(--_font); color: var(--_ink-3) !important; text-decoration: underline; text-decoration-color: var(--_rule); text-underline-offset: 2px; cursor: pointer; }
 .sp-revert:hover { color: var(--_ink) !important; text-decoration-color: currentColor; }
-.sp-close { flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--_rule); background: none; font-size: 1.2rem; line-height: 1; cursor: pointer; }
-.sp-close:hover { background: var(--_sunk); }
 /* resize handles along every edge and corner */
 .sp-edge { position: absolute; z-index: 2; touch-action: none; }
 .sp-edge[data-edge="n"], .sp-edge[data-edge="s"] { left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
@@ -250,6 +241,15 @@ html.slop-dark {
 .sp-as { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--_rule); border-radius: 99px; background: var(--_bg); font-size: 0.72rem; font-weight: 600; color: var(--_ink-2) !important; cursor: pointer; }
 .sp-as i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_ink) 15%, transparent); }
 .sp-as:hover { border-color: var(--_ink-3); color: var(--_ink) !important; }
+/* a new category, made from the row */
+.sp-as-new { justify-content: center; min-width: 22px; padding: 0 7px; border-style: dashed; font-size: 0.82rem; }
+.sp-newcat { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.sp-newcat input { height: 24px; padding: 0 8px; border: 1px solid var(--_rule); border-radius: 99px; background: var(--_bg); font: 0.74rem var(--_font); color: var(--_ink); outline: none; }
+.sp-newcat input:focus { border-color: var(--_accent); }
+.sp-newcat-name { width: 9em; }
+.sp-newcat-about { width: 15em; }
+.sp-newcat-add { height: 24px; padding: 0 10px; border: 1px solid var(--_accent); border-radius: 99px; background: var(--_accent); color: var(--_bg) !important; font: 600 0.72rem var(--_font); cursor: pointer; }
+.sp-newcat-x { height: 24px; padding: 0 4px; border: 0; background: none; color: var(--_ink-3) !important; font-size: 1rem; line-height: 1; cursor: pointer; }
 
 /* the repeat badge: the same words are elsewhere too */
 .sp-rep {
@@ -298,8 +298,33 @@ html:not(.slop-editing) .slop-empty { display: none !important; }
 .slop-remove-hint { outline: 2px dashed var(--_danger) !important; outline-offset: 3px; border-radius: 2px; }
 .slop-removing { outline: 2px dashed var(--_danger) !important; outline-offset: 3px; border-radius: 2px; background: color-mix(in srgb, var(--_danger) 12%, transparent); }
 
+/* editing on the page: the panel is only its header, and a row over the focused text marks it and switches its slop */
+.sp-mode { flex: none; display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--_rule); background: none; font: 600 0.78rem var(--_font); color: var(--_ink-2) !important; cursor: pointer; white-space: nowrap; }
+.sp-mode:hover { border-color: var(--_ink-3); }
+.slop-panel.sp-mini { top: auto !important; left: auto !important; right: max(16px, env(safe-area-inset-right, 0px)) !important; bottom: max(16px, env(safe-area-inset-bottom, 0px)) !important; width: auto !important; max-width: calc(100vw - 32px); height: auto !important; border-radius: 14px; }
+.sp-mini > :not(.sp-head), .sp-mini .sp-grip { display: none !important; }
+.sp-mini .sp-head { align-items: center; padding: 8px 8px 8px 14px; cursor: default; }
+.sp-mini .sp-head h2 { font-size: 0.88rem; }
+.sp-mini .sp-head > div { flex: 1 1 auto; min-width: 0; }
+.sp-mini .sp-head h2, .sp-mini .sp-status { min-height: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sp-mini .sp-colors { margin-left: 8px; }
+.slop-live [contenteditable="true"] { cursor: text; }
+.slop-live [contenteditable="true"]:focus { outline: 2px solid var(--_accent); outline-offset: 3px; border-radius: 2px; }
+.slop-live [data-slop-v] { cursor: default; }
+.slop-live [contenteditable="true"]:empty { min-height: 1em; min-height: 1lh; }
+.slop-float {
+  position: fixed; z-index: 2147483000; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; max-width: min(720px, calc(100vw - 16px)); padding: 6px 8px;
+  border: 1px solid var(--_rule); border-radius: 12px; background: var(--_bg); box-shadow: var(--_shadow); box-sizing: border-box;
+  font: 14px/1.4 var(--_font); color: var(--_ink); text-align: left; -webkit-font-smoothing: antialiased;
+}
+.slop-float[hidden] { display: none !important; }
+.slop-float * { box-sizing: border-box; }
+.slop-float button { font-family: inherit; color: inherit; }
+.slop-float .sp-assign { padding: 0; }
+
 @media (max-width: 900px) {
   .slop-panel { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 60svh; }
   .sp-head { cursor: ns-resize; }
   .sp-edge:not([data-edge="n"]) { display: none; }
+  .slop-panel.sp-mini { left: 8px !important; right: 8px !important; bottom: 8px !important; max-width: none; }
 }
