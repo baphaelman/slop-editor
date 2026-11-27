@@ -1,6 +1,6 @@
 // slop-editor/vite: the slop editor in a Vite app. The words live in one JSON file (src/slopText.json). This puts them in
 // the page as its text block, with slop.js and slop.css, which render them, and under `vite` (not a build) it answers
-// the editor: its Edit text button appears on the page and saves back into the file. A built site has no editor.
+// the editor: it opens on the page and saves back into the file. A built site has no editor.
 //
 //   import slopEditor from 'slop-editor/vite';
 //   export default defineConfig({ plugins: [react(), slopEditor()] });   // or slopEditor({ text: 'content/words.json' })

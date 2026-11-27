@@ -111,64 +111,185 @@ const Slop = (() => {
     // the text as it reads: runs of one author's words (`by`: the category) with their formatting (b, i, code, key)
     // and the link they sit in, if any. A {name} is a run of its own with `v` set. Code is a fact: whoever wrote it,
     // a command or a file name reads as data
-    function runs(value) {
+    // Each run also has `at`, where each of its characters is in the plain text (a {name}: where it starts, and `len`).
+    // `marks` are the markup's characters, [start, length, the mark it pairs with], for editing the words as they read
+    function parse(value) {
         const text = plain(value);
         const authors = authorsByChar(value);
         const out = [];
+        const marks = [];
         const st = { b: false, i: false, code: false, key: false, link: null };
+        const opened = {}; // the mark that turned each one on
         let linkEnd = -1;
         let linkTail = 0;
-        const push = (s, by, v) => {
-            const run = { text: s, by: st.code ? 'data' : by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v };
+        const push = (s, by, src, v, len) => {
+            const run = { text: s, by: st.code ? 'data' : by, link: st.link, b: st.b, i: st.i, code: st.code, key: st.key, v, at: [src], len };
             const last = out[out.length - 1];
-            if (last && !last.v && !v && same(last, run)) last.text += s;
-            else out.push(run);
+            if (last && !last.v && !v && same(last, run)) { last.text += s; last.at.push(src); } else out.push(run);
+        };
+        const mark = (kind, start, length) => {
+            const m = [start, length, null];
+            if (opened[kind]) { m[2] = opened[kind]; opened[kind][2] = m; opened[kind] = null; } else opened[kind] = m;
+            marks.push(m);
         };
         for (let i = 0; i < text.length;) {
             const c = text[i];
-            if (i === linkEnd) { st.link = null; i += linkTail; linkEnd = -1; continue; }
-            if (c === '\\' && i + 1 < text.length) { push(text[i + 1], authors[i + 1]); i += 2; continue; }
-            if (c === '[' && text[i + 1] === '[' && !st.key) { st.key = true; i += 2; continue; }
-            if (c === ']' && text[i + 1] === ']' && st.key) { st.key = false; i += 2; continue; }
+            if (i === linkEnd) { st.link = null; mark('link', i, linkTail); i += linkTail; linkEnd = -1; continue; }
+            if (c === '\\' && i + 1 < text.length) { marks.push([i, 1, null]); push(text[i + 1], authors[i + 1], i + 1); i += 2; continue; }
+            if (c === '[' && text[i + 1] === '[' && !st.key) { st.key = true; mark('key', i, 2); i += 2; continue; }
+            if (c === ']' && text[i + 1] === ']' && st.key) { st.key = false; mark('key', i, 2); i += 2; continue; }
             if (c === '[' && !st.link) {
                 LINK.lastIndex = i;
                 const m = LINK.exec(text);
-                if (m) { st.link = { href: m[2] }; linkEnd = i + 1 + m[1].length; linkTail = m[0].length - m[1].length - 1; i++; continue; }
+                if (m) { st.link = { href: m[2] }; mark('link', i, 1); linkEnd = i + 1 + m[1].length; linkTail = m[0].length - m[1].length - 1; i++; continue; }
             }
-            if (c === '`') { st.code = !st.code; i++; continue; }
+            if (c === '`') { st.code = !st.code; mark('code', i, 1); i++; continue; }
             if (c === '*' && !st.code) {
-                if (text[i + 1] === '*') { st.b = !st.b; i += 2; } else { st.i = !st.i; i++; }
+                if (text[i + 1] === '*') { st.b = !st.b; mark('b', i, 2); i += 2; } else { st.i = !st.i; mark('i', i, 1); i++; }
                 continue;
             }
             if (c === '{') {
                 VAR.lastIndex = i;
                 const m = VAR.exec(text);
-                if (m) { push('', authors[i], m[1]); i += m[0].length; continue; }
+                if (m) { push('', authors[i], i, m[1], m[0].length); i += m[0].length; continue; }
             }
-            push(c, authors[i]);
+            push(c, authors[i], i);
             i++;
         }
-        return out;
+        return { runs: out, marks };
+    }
+    const runs = (value) => parse(value).runs;
+
+    // the words as they read, one character each, with where each is in the plain text. A {name} reads as one
+    // character, OBJ, as the editor shows it: one block that can't be typed into
+    const OBJ = '￼';
+    function readOf(value) {
+        let words = '';
+        const at = [];
+        const len = [];
+        runs(value).forEach((run) => {
+            if (run.v) { words += OBJ; at.push(run.at[0]); len.push(run.len); return; }
+            words += run.text;
+            run.at.forEach((i) => { at.push(i); len.push(1); });
+        });
+        return { words, at, len };
+    }
+    // `value` after the words as they read, from `start` to `end`, were replaced with `typed` (typed by me): letters
+    // typed are escaped, the markup around and inside the stretch stays, and markup left with nothing in it goes
+    function editRead(value, start, end, typed, by = 'me') {
+        const text = plain(value);
+        const authors = authorsByChar(value);
+        const { at, len } = readOf(value);
+        const { marks } = parse(value);
+        const gone = new Set();
+        for (let k = start; k < end; k++) for (let n = 0; n < len[k]; n++) gone.add(at[k] + n);
+        // an escaped letter takes its backslash with it
+        marks.forEach(([s, l, pair]) => { if (l === 1 && !pair && text[s] === '\\' && gone.has(s + 1)) gone.add(s); });
+        // where the typing goes: after the letter before it, so it takes that letter's bold, link or code
+        const to = start > 0 ? at[start - 1] + len[start - 1] : 0;
+        const escaped = typed.replace(/[\\*`[\]{]/g, '\\$&');
+        // marks whose pair now holds nothing go too
+        const markup = new Set(marks.flatMap(([s, l]) => [...Array(l).keys()].map((n) => s + n)));
+        const holds = (from, until) => {
+            for (let i = from; i < until; i++) if (!gone.has(i) && !markup.has(i)) return true;
+            return Boolean(escaped) && to >= from && to <= until;
+        };
+        marks.forEach(([s, l, pair]) => {
+            if (!pair || s > pair[0] || holds(s + l, pair[0])) return;
+            for (let n = 0; n < l; n++) gone.add(s + n);
+            for (let n = 0; n < pair[1]; n++) gone.add(pair[0] + n);
+        });
+        let next = '';
+        const who = [];
+        for (let i = 0; i <= text.length; i++) {
+            if (i === to) { next += escaped; who.push(...new Array(escaped.length).fill(by)); }
+            if (i < text.length && !gone.has(i)) { next += text[i]; who.push(authors[i]); }
+        }
+        return fromChars(next, who);
+    }
+    // `value` with the words as they read, from `start` to `end`, made bold, italic or code (`b`, `i`, `code`: on unless
+    // they all are already, then off) or a link (`link`: {href}, or null for none). The text's markup is written again,
+    // as few marks as it takes; every letter and {name} keeps its author, and a mark takes the author of the letter
+    // after it (the one before, at the end)
+    function restyle(value, start, end, how) {
+        const text = plain(value);
+        const authors = authorsByChar(value);
+        const chars = [];
+        runs(value).forEach((run) => {
+            const style = { b: run.b, i: run.i, code: run.code, key: run.key, link: run.link };
+            if (run.v) chars.push({ ...style, v: text.slice(run.at[0], run.at[0] + run.len), by: authors[run.at[0]] });
+            else for (let k = 0; k < run.text.length; k++) chars.push({ ...style, c: run.text[k], by: authors[run.at[k]] });
+        });
+        const [key, to] = Object.entries(how)[0];
+        const picked = chars.slice(start, end);
+        const on = key === 'link' ? to : !picked.filter((c) => !c.v).every((c) => c[key]);
+        picked.forEach((c) => { c[key] = on; });
+        let out = '';
+        const who = [];
+        const put = (str, by) => { out += str; who.push(...new Array(str.length).fill(by)); };
+        const now = { b: false, i: false, code: false, key: false, link: null };
+        // marks are toggles, so their order only matters for brackets: a [[key]] opens before a [link] in it
+        const shift = (want, by) => {
+            if (now.link && now.link !== want.link) { put(`](${now.link.href})`, by); now.link = null; }
+            if (now.code && !want.code) { put('`', by); now.code = false; }
+            if (now.key && !want.key) { put(']]', by); now.key = false; }
+            if (!now.code && !want.code) {
+                if (now.b !== want.b) { put('**', by); now.b = want.b; }
+                if (now.i !== want.i) { put('*', by); now.i = want.i; }
+            }
+            if (want.key && !now.key) { put('[[', by); now.key = true; }
+            if (want.link && !now.link) { put('[', by); now.link = want.link; }
+            if (want.code && !now.code) {
+                if (now.b !== want.b) { put('**', by); now.b = want.b; }
+                if (now.i !== want.i) { put('*', by); now.i = want.i; }
+                put('`', by);
+                now.code = true;
+            }
+        };
+        chars.forEach((c) => {
+            shift(c, c.by);
+            if (c.v) put(c.v, c.by);
+            else put(/[\\*`[\]{]/.test(c.c) ? `\\${c.c}` : c.c, c.by);
+        });
+        shift({ b: false, i: false, code: false, key: false, link: null }, chars.at(-1)?.by ?? 'ai');
+        return fromChars(out, who);
+    }
+    // where a stretch of the words as they read is in the plain text: [start, end)
+    function readSpan(value, start, end) {
+        const { at, len } = readOf(value);
+        const text = plain(value);
+        if (start >= end) { const i = start > 0 ? at[start - 1] + len[start - 1] : 0; return [i, i]; }
+        return [at[start] ?? text.length, end > 0 ? at[end - 1] + len[end - 1] : 0];
     }
 
     // a text in paragraphs: split at blank lines, each keeping its authors. Without a blank line it's one paragraph
-    function paragraphsOf(value) {
+    // where each paragraph is in the plain text: [[start, end)]. Empty ones are left out unless `empty` (an editor
+    // where a new paragraph is typed into)
+    function paragraphSpans(value, empty) {
         const text = plain(value);
-        const authors = authorsByChar(value);
         const spans = [];
         const gap = /\n[ \t]*\n\s*/g;
         let at = 0;
         for (let m; (m = gap.exec(text));) { spans.push([at, m.index]); at = m.index + m[0].length; }
-        if (!spans.length) return [value];
         spans.push([at, text.length]);
-        const parts = spans.map(([s, e]) => fromChars(text.slice(s, e), authors.slice(s, e))).filter((p) => plain(p).trim());
-        return parts.length ? parts : [value];
+        const kept = empty ? spans : spans.filter(([s, e]) => text.slice(s, e).trim());
+        return spans.length > 1 && kept.length ? kept : [[0, text.length]];
     }
+    const slice = (value, s, e) => fromChars(plain(value).slice(s, e), authorsByChar(value).slice(s, e));
+    function paragraphsOf(value) {
+        const spans = paragraphSpans(value);
+        return spans.length > 1 ? spans.map(([s, e]) => slice(value, s, e)) : [value];
+    }
+    // `value` with plain characters start to end replaced by `part` (a value), each keeping its author
+    const splice = (value, s, e, part) => fromChars(plain(value).slice(0, s) + plain(part) + plain(value).slice(e),
+        [...authorsByChar(value).slice(0, s), ...authorsByChar(part), ...authorsByChar(value).slice(e)]);
 
     // values the page fills in: {html, data} (data: a fact, shown in the data color; otherwise it takes the color of
     // whoever wrote the {name}), or a plain string or number (a fact)
     const vars = {};
     const config = { code: 'code' };
+    // while the words are edited on the page, a {name} is one block that can't be typed into
+    const live = { on: false };
     // where the browser editor keeps this page's copy: its path, or the page's own name for it (Slop.start({key}))
     const pageKey = () => config.key ?? location.pathname;
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -186,6 +307,7 @@ const Slop = (() => {
 
     // the text as HTML: each author's words in a span (slop-ai, slop-me, slop-ok, slop-data, …), links open in a new tab
     function render(value, local) {
+        const all = runs(value);
         const one = (run) => {
             let h;
             let by = run.by;
@@ -194,7 +316,10 @@ const Slop = (() => {
                 h = v.html;
                 if (v.data) by = 'data';
             } else h = esc(run.text).replace(/\n/g, '<br>');
-            h = `<span class="${cls(by)}">${h}</span>`;
+            // spaces at either end would collapse, and the caret couldn't go after one just typed
+            if (live.on && !run.v && run === all.at(-1)) h = h.replace(/ +$/, (m) => '&nbsp;'.repeat(m.length));
+            if (live.on && !run.v && run === all[0]) h = h.replace(/^ +/, (m) => '&nbsp;'.repeat(m.length));
+            h = `<span class="${cls(by)}"${run.v && live.on ? ' contenteditable="false" data-slop-v=""' : ''}>${h}</span>`;
             if (run.key) h = `<kbd>${h}</kbd>`;
             if (run.code) h = `<span class="${config.code}">${h}</span>`;
             if (run.i) h = `<em>${h}</em>`;
@@ -202,7 +327,7 @@ const Slop = (() => {
             return h;
         };
         const parts = [];
-        runs(value).forEach((run) => {
+        all.forEach((run) => {
             const last = parts[parts.length - 1];
             if (!run.link) parts.push(run);
             else if (last?.link === run.link) last.runs.push(run);
@@ -312,7 +437,7 @@ const Slop = (() => {
         return out;
     }
 
-    const core = { BUILTIN, plain, applyEdit, reslop, unslop, assign, overlay, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
+    const core = { BUILTIN, plain, applyEdit, readOf, editRead, readSpan, restyle, paragraphSpans, splice, reslop, unslop, assign, overlay, reattribute, runs, readable, render, makeup, share, percent, repeats, rebase, listsIn, wordsOf, paragraphsOf, vars };
     if (typeof document === 'undefined') return core; // Node (the CLI and the tests) only needs the format
 
     /* ---------- the block ---------- */
@@ -397,7 +522,7 @@ const Slop = (() => {
         const local = el.dataset.slopVars ? JSON.parse(el.dataset.slopVars) : undefined;
         if (el.dataset.slop) {
             const value = get(el.dataset.slop);
-            const parts = SPLITS.test(el.tagName) ? paragraphsOf(value) : [value];
+            const parts = !SPLITS.test(el.tagName) ? [value] : live.on ? paragraphSpans(value, true).map(([s, e]) => slice(value, s, e)) : paragraphsOf(value);
             const h = render(parts[0], local);
             if (el.innerHTML !== h) el.innerHTML = h;
             el.classList.toggle('slop-empty', !plain(value).trim());
@@ -415,7 +540,7 @@ const Slop = (() => {
             let c = copies[i];
             if (!c) {
                 c = el.cloneNode(false);
-                ['id', 'data-slop', 'data-slop-attr'].forEach((a) => c.removeAttribute(a));
+                ['id', 'data-slop', 'data-slop-attr', 'contenteditable'].forEach((a) => c.removeAttribute(a));
                 c.classList.remove('slop-focus', 'slop-copy', 'slop-empty');
                 ownerOf.set(c, el);
                 copies.push(c);
@@ -462,7 +587,7 @@ const Slop = (() => {
             const first = [...box.children].find(ours);
             if (!first) return;
             const t = first.cloneNode(false);
-            ['id', 'data-slop'].forEach((a) => t.removeAttribute(a));
+            ['id', 'data-slop', 'contenteditable'].forEach((a) => t.removeAttribute(a));
             templates.set(box, t);
         }
         const paths = textKeys(nodeAt(text, at)).filter(isParagraph).map((k) => `${at}.${k}`);
@@ -760,15 +885,13 @@ const Slop = (() => {
         let controls = []; // [{el, paths}] in the current view, repainted by numbers()
         let undo = null;
 
-        const btn = el('button', 'slop-edit-btn', 'Edit text');
-        btn.type = 'button';
         const aside = el('aside', 'slop-panel', `
           <header class="sp-head" title="Drag to move, or drag an edge to resize. Double-click to put it back">
             <span class="sp-grip" aria-hidden="true"></span>
             <div><h2>Edit text</h2><p class="sp-status" role="status" aria-live="polite"></p></div>
+            <button type="button" class="sp-mode"></button>
             <button type="button" class="sp-colors" role="switch" title="Slop-o-meter: color the page's words by who wrote them. Only for you, while you edit"><span class="sp-switch" aria-hidden="true"></span>Colors</button>
             <button type="button" class="sp-save" title="Save (⌘S)" disabled>Saved</button>
-            <button type="button" class="sp-close" aria-label="Close the editor">×</button>
           </header>
           <div class="sp-cover">
             <div class="sp-cats"></div>
@@ -788,11 +911,12 @@ const Slop = (() => {
           ${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((e) => `<div class="sp-edge" data-edge="${e}" aria-hidden="true"></div>`).join('')}`);
         aside.hidden = true;
         aside.setAttribute('aria-label', 'Edit text');
-        document.body.append(btn, aside);
+        document.body.append(aside);
         const $ = (sel) => aside.querySelector(sel);
         const body = $('.sp-body');
         const statusEl = $('.sp-status');
         aside.classList.add('slop-on'); // the text boxes keep their colors when the page's are off
+        const modeBtn = $('.sp-mode');
         editSwitch = $('.sp-colors');
         editSwitch.addEventListener('click', () => { editColors = !editColors; paintShow(); });
 
@@ -1377,23 +1501,61 @@ const Slop = (() => {
                 b.type = 'button';
                 b.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the focus and the selection
                 b.addEventListener('click', () => {
-                    let [s, e] = [input.selectionStart, input.selectionEnd];
+                    let [s, e, n] = selOf(input);
                     const whole = s === e;
-                    if (whole) [s, e] = [0, input.value.length];
+                    if (whole) [s, e] = [0, n];
                     withUndo(`Marked ${whole ? 'the text' : 'the selection'} as ${cat.label}`, () => paths.forEach((p) => set(p, assign(get(p), s, e, cat.id))));
                 });
                 assignEl.append(b);
             });
+            assignEl.append(newCategory(wrap, input, paths));
             assignLabel(input);
             if (wrap.insert) wrap.insert.before(assignEl); else wrap.append(assignEl); // the + stays last
         }
+        // a category made where the words are: its name and whose words it means, and the selection marked as it
+        function newCategory(wrap, input, paths) {
+            const plus = el('button', 'sp-as sp-as-new', '+');
+            plus.type = 'button';
+            plus.title = 'A new category: another author or source';
+            plus.setAttribute('aria-label', 'New category');
+            plus.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the selection until it's read
+            plus.addEventListener('click', () => {
+                const [s, e] = selOf(input);
+                const form = el('span', 'sp-newcat', '<input class="sp-newcat-name" placeholder="Name" aria-label="New category\'s name" spellcheck="false">'
+                    + '<input class="sp-newcat-about" placeholder="Whose words are they?" aria-label="Whose words the new category means">'
+                    + `<button type="button" class="sp-newcat-add">${s < e ? 'Add and mark' : 'Add'}</button><button type="button" class="sp-newcat-x" aria-label="Cancel">×</button>`);
+                const [name, desc] = form.querySelectorAll('input');
+                plus.replaceWith(form);
+                name.focus();
+                const back = () => { showAssign(wrap, input, paths); input.focus(); if (input.setSelectionRange) input.setSelectionRange(s, e); };
+                const add = () => {
+                    const label = name.value.trim();
+                    if (!label) { name.focus(); return; }
+                    const id = slug(label);
+                    const color = PALETTE[categories().filter((c) => !c.builtin).length % PALETTE.length];
+                    withUndo(s < e ? `Added "${label}" and marked the selection as it` : `Added "${label}"`, () => {
+                        Object.assign(own(id), { label, color }, desc.value.trim() ? { about: desc.value.trim() } : {});
+                        if (s < e) paths.forEach((p) => set(p, assign(get(p), s, e, id)));
+                    });
+                    applyColors();
+                    if (!inPlace) renderCats();
+                    back();
+                };
+                name.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); desc.focus(); } if (ev.key === 'Escape') back(); });
+                desc.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); add(); } if (ev.key === 'Escape') back(); });
+                form.querySelector('.sp-newcat-add').addEventListener('click', add);
+                form.querySelector('.sp-newcat-x').addEventListener('click', back);
+            });
+            return plus;
+        }
         const assignLabel = (input) => {
-            if (assignEl.firstChild) assignEl.firstChild.textContent = input.selectionStart === input.selectionEnd ? 'Mark all as' : 'Mark selection as';
+            const [s, e] = selOf(input);
+            if (assignEl.firstChild) assignEl.firstChild.textContent = s === e ? 'Mark all as' : 'Mark selection as';
         };
         // while a selection is being dragged out too, so the row doesn't change under the pointer once it's let go
         document.addEventListener('selectionchange', () => {
             const a = document.activeElement;
-            if (a?.tagName === 'TEXTAREA' && assignEl.parentNode?.contains(a)) assignLabel(a);
+            if ((a?.tagName === 'TEXTAREA' && assignEl.parentNode?.contains(a)) || (a === liveEl && assignEl.parentNode === float)) assignLabel(a);
         });
 
         /* copying a text's words keeps who wrote them: pasted into a text (here, or in another page's editor), they keep
@@ -1509,7 +1671,7 @@ const Slop = (() => {
                 mark(false);
                 // after the click that moved the focus lands: removing these first would move what's being clicked
                 afterClick(() => {
-                    if (document.activeElement === input) return;
+                    if (document.activeElement === input || assignEl.contains(document.activeElement)) return;
                     wrap.querySelector('.sp-hint').hidden = true;
                     if (assignEl.parentNode === wrap) assignEl.remove();
                 });
@@ -1728,6 +1890,7 @@ const Slop = (() => {
                 row.querySelector('.sp-cat-pct').textContent = percent(page.letters ? (page.counts[row.dataset.id] ?? 0) / page.letters : 0);
             });
             controls.forEach((c) => paintControl(c, cats));
+            if (floatCtl && !controls.some((c) => c.el === floatCtl)) paintControl({ el: floatCtl, paths: () => [spot(liveEl)?.path].filter(Boolean) }, cats);
             body.querySelectorAll('.sp-goto').forEach((go) => {
                 const m = makeup([get(go.dataset.path)]);
                 go.querySelector('.sp-pie').style.background = gradient(m, cats);
@@ -1765,7 +1928,7 @@ const Slop = (() => {
             paintMeters();
         }
         repaint = () => { if (!aside.hidden) render(); };
-        reseen = () => { if (!aside.hidden) body.querySelectorAll('.sp-field').forEach(paintSeen); };
+        reseen = () => { if (!aside.hidden) { body.querySelectorAll('.sp-field').forEach(paintSeen); liven(); } };
         // a text the page doesn't show right now is tagged, with a way to show it if the page says how
         function paintSeen(f) {
             const tag = f.querySelector('.sp-unseen');
@@ -1843,6 +2006,20 @@ const Slop = (() => {
             setTimeout(() => f.classList.remove('sp-flash'), 900);
         }
 
+        // the box of a text being typed into on the page, scrolled to in the panel without taking the focus
+        function seek(path) {
+            const find = () => [...body.querySelectorAll('.sp-field')].find((x) => x.paths().includes(path));
+            if (!find() || state.tab === 'hidden') {
+                state.tab = state.tab === 'slop' && hasSlop(path) ? 'slop' : 'all';
+                state.open.add(keysOf(path)[0]);
+                render();
+            }
+            const f = find();
+            if (!f) return;
+            f.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            f.classList.add('sp-flash');
+            setTimeout(() => f.classList.remove('sp-flash'), 900);
+        }
         const grow = (x) => { x.style.height = 'auto'; x.style.height = `${x.scrollHeight + 2}px`; };
 
         // typing: what you type is yours, the rest keeps its author
@@ -1884,6 +2061,357 @@ const Slop = (() => {
             }
             touched();
         }
+
+        /* editing on the page: while the editor is open, every text on the page can be typed into where it is (the
+           panel can shrink to its header, `inPlace`). The browser changes the words; each change is read back as the words that read differently (`reconcile`),
+           made into the text with editRead (what's typed is mine, the markup stays), and the element drawn again */
+        let inPlace = store.get('slop-editor-place') !== 'panel'; // the bar, unless the panel was open last time
+        let liveEl = null; // the element being typed into
+        let floatCtl = null;
+        const float = el('div', 'slop-float slop-on');
+        float.hidden = true;
+        document.body.append(float);
+        const canLive = (x) => !x.closest('.slop-panel, .slop-float, button, select, label, [data-slop-ref]') && (x.dataset.slop || x.dataset.slopMore);
+        const liveOf = (t) => (!aside.hidden ? t?.closest?.('[contenteditable="true"][data-slop], [contenteditable="true"][data-slop-more]') : null);
+        function liven() {
+            const on = !aside.hidden;
+            document.querySelectorAll('[data-slop], [data-slop-more]').forEach((x) => {
+                if (on && canLive(x)) { if (x.contentEditable !== 'true') { x.contentEditable = 'true'; x.spellcheck = true; } } else if (x.hasAttribute('contenteditable')) x.removeAttribute('contenteditable');
+            });
+        }
+        function setPlace(on) {
+            inPlace = on;
+            store.set('slop-editor-place', on ? 'page' : 'panel');
+            aside.classList.toggle('sp-mini', on);
+            modeBtn.innerHTML = on ? 'Panel' : SHRINK;
+            modeBtn.title = on ? 'Show every text in the panel' : 'Shrink the editor to a bar. You type into the page either way';
+            modeBtn.setAttribute('aria-label', on ? 'Show the panel' : 'Shrink to a bar');
+            place();
+            if (!on && !aside.hidden) render();
+        }
+        const SHRINK = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="3.5" y="9.5" width="9" height="2" rx="1" fill="currentColor"/></svg>';
+        function livePage() {
+            const on = !aside.hidden;
+            document.documentElement.classList.toggle('slop-live', on);
+            if (live.on !== on) { live.on = on; fill(); }
+            liven();
+        }
+        // which text an element shows, and which of its paragraphs: {path, owner (its [data-slop] element), j, s, e, part}
+        function spot(x) {
+            const owner = x.dataset.slop ? x : ownerOf.get(x);
+            if (!owner) return null;
+            const path = owner.dataset.slop;
+            const value = get(path);
+            const spans = SPLITS.test(owner.tagName) ? paragraphSpans(value, true) : [[0, plain(value).length]];
+            const j = x === owner ? 0 : (spills.get(owner) ?? []).indexOf(x) + 1;
+            if (!spans[j]) return null;
+            const [s, e] = spans[j];
+            return { path, owner, j, s, e, value, spans, part: slice(value, s, e) };
+        }
+        const shownAt = (owner, j) => (j ? spills.get(owner)?.[j - 1] : owner);
+
+        // the words an element shows, as readOf has them: a {name} is one character, a <br> a line break
+        function domWords(root) {
+            let out = '';
+            const walk = (n) => {
+                if (n.nodeType === 3) out += n.data.replace(/ /g, ' ');
+                else if (n.nodeType === 1 && n.hasAttribute('data-slop-v')) out += OBJ;
+                else if (n.nodeName === 'BR') out += '\n';
+                else n.childNodes.forEach(walk);
+            };
+            root.childNodes.forEach(walk);
+            return out;
+        }
+        // how far into an element's words a point is
+        function indexAt(root, node, offset) {
+            const r = document.createRange();
+            r.selectNodeContents(root);
+            try { r.setEnd(node, offset); } catch { return 0; }
+            return domWords(r.cloneContents()).length;
+        }
+        const selIn = (root) => {
+            const sel = getSelection();
+            if (!sel.rangeCount || !root.contains(sel.anchorNode)) return null;
+            const r = sel.getRangeAt(0);
+            return [indexAt(root, r.startContainer, r.startOffset), indexAt(root, r.endContainer, r.endOffset)];
+        };
+        // the caret at k of an element's words, or the selection k to k2
+        function caret(root, k, k2 = k) {
+            const r = document.createRange();
+            r.setStart(...pointAt(root, k));
+            r.setEnd(...pointAt(root, Math.max(k, k2)));
+            const sel = getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+        }
+        function pointAt(root, k) {
+            let n = 0;
+            let at = null;
+            const walk = (x) => {
+                if (at) return;
+                if (x.nodeType === 3) {
+                    if (k <= n + x.length) { at = [x, k - n]; return; }
+                    n += x.length;
+                } else if (x.nodeType === 1 && (x.hasAttribute('data-slop-v') || x.nodeName === 'BR')) {
+                    if (k === n) { at = [x.parentNode, [...x.parentNode.childNodes].indexOf(x)]; return; }
+                    n++;
+                    if (k === n && x.nextSibling?.nodeType !== 3) at = [x.parentNode, [...x.parentNode.childNodes].indexOf(x) + 1];
+                } else x.childNodes.forEach(walk);
+            };
+            root.childNodes.forEach(walk);
+            return at ?? [root, root.childNodes.length];
+        }
+        // the selection in source terms, for "Mark as": [start, end, length] of the whole text's plain text
+        function selOf(x) {
+            if (x.tagName === 'TEXTAREA') return [x.selectionStart, x.selectionEnd, x.value.length];
+            const sp = spot(x);
+            const [a, b] = selIn(x) ?? [0, 0];
+            if (!sp) return [0, 0, 0];
+            const [s, e] = readSpan(sp.part, a, b);
+            return [sp.s + s, sp.s + e, plain(sp.value).length];
+        }
+
+        // the words in an element, after a change: into the text, and the element (and every other showing it) redrawn
+        const liveUndo = []; // [{path, value, owner}], ⌘Z on the page
+        const liveRedo = [];
+        let lastPush = 0;
+        let lastKind = '';
+        function commit(sp, value, j, at, coalesce, to = at) {
+            const now = performance.now();
+            const kind = plain(value).length < plain(sp.value).length ? 'delete' : 'type';
+            if (!coalesce || now - lastPush > 800 || liveUndo.at(-1)?.path !== sp.path || kind !== lastKind) liveUndo.push({ path: sp.path, value: sp.value, owner: sp.owner });
+            lastPush = now;
+            lastKind = kind;
+            liveRedo.length = 0;
+            put(sp.path, value, sp.owner, j, at, to);
+        }
+        function put(path, value, owner, j, at, to = at) {
+            undo = null;
+            set(path, value);
+            fill();
+            liven();
+            body.querySelectorAll('.sp-field').forEach((f) => {
+                if (!f.paths().includes(path) || !f.input) return;
+                f.input.value = plain(get(f.dataset.path));
+                grow(f.input);
+            });
+            touched();
+            const x = shownAt(owner, j) ?? shownAt(owner, Math.max(0, (spills.get(owner)?.length ?? 0)));
+            if (!x) return;
+            if (document.activeElement !== x) x.focus({ preventScroll: true });
+            const n = domWords(x).length;
+            caret(x, Math.min(at, n), Math.min(to, n));
+            paintFloat();
+        }
+        let replaced = null; // the selection a change replaces, from beforeinput
+        function reconcile(x) {
+            const sp = spot(x);
+            if (!sp) return;
+            const before = readOf(sp.part).words;
+            let now = domWords(x);
+            if (now.endsWith('\n') && !before.endsWith('\n') && x.lastChild?.nodeName === 'BR') now = now.slice(0, -1); // the browser's placeholder
+            if (now === before) return;
+            const at = selIn(x)?.[1] ?? now.length;
+            let a = 0;
+            let b = 0;
+            if (replaced && now.startsWith(before.slice(0, replaced[0])) && now.endsWith(before.slice(replaced[1])) && now.length - (before.length - replaced[1]) >= replaced[0]) {
+                [a, b] = replaced;
+            } else {
+                while (a < before.length && a < now.length && before[a] === now[a]) a++;
+                let end = 0;
+                while (end < before.length - a && end < now.length - a && before[before.length - 1 - end] === now[now.length - 1 - end]) end++;
+                b = before.length - end;
+            }
+            const typed = now.slice(a, now.length - (before.length - b)).replaceAll(OBJ, '');
+            replaced = null;
+            commit(sp, splice(sp.value, sp.s, sp.e, editRead(sp.part, a, b, typed)), sp.j, at, true);
+        }
+        // ⌘B, ⌘I, ⌘E (code) and ⌘K (a link) on the selection: its words stay, written again with the markup
+        function format(x, how) {
+            const sp = spot(x);
+            const [a, b] = selIn(x) ?? [0, 0];
+            if (!sp || a === b) { status('Select some words first'); return; }
+            commit(sp, splice(sp.value, sp.s, sp.e, restyle(sp.part, a, b, how)), sp.j, a, false, b);
+        }
+        function linkAt(x) {
+            const sp = spot(x);
+            const [a, b] = selIn(x) ?? [0, 0];
+            if (!sp || a === b) { status('Select some words first'); return; }
+            // already a link: ⌘K takes it off
+            const { at } = readOf(sp.part);
+            const linked = runs(sp.part).filter((r) => r.link && !r.v).flatMap((r) => r.at);
+            if (at.slice(a, b).every((i) => linked.includes(i))) { format(x, { link: null }); return; }
+            float.querySelector('.sp-linkform')?.remove();
+            const form = el('span', 'sp-newcat sp-linkform', '<input class="sp-newcat-about" placeholder="Link to https://…" aria-label="Link to" spellcheck="false">'
+                + '<button type="button" class="sp-newcat-add">Link</button><button type="button" class="sp-newcat-x" aria-label="Cancel">×</button>');
+            float.append(form);
+            const input = form.querySelector('input');
+            input.focus();
+            const back = () => { form.remove(); x.focus(); caret(x, a, b); };
+            const go = () => {
+                const href = input.value.trim();
+                form.remove();
+                if (!href) { back(); return; }
+                x.focus();
+                caret(x, a, b);
+                format(x, { link: { href: /^[a-z][\w+.-]*:|^[/#?.]/i.test(href) ? href : `https://${href}` } });
+            };
+            input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } if (e.key === 'Escape') back(); });
+            form.querySelector('.sp-newcat-add').addEventListener('click', go);
+            form.querySelector('.sp-newcat-x').addEventListener('click', back);
+        }
+        // typing that isn't left to the browser: a new paragraph, a line break, joining paragraphs, formatting
+        function typeAt(x, words) {
+            const sp = spot(x);
+            const [a, b] = selIn(x) ?? [0, 0];
+            commit(sp, splice(sp.value, sp.s, sp.e, editRead(sp.part, a, b, words)), sp.j, a + words.length);
+        }
+        document.addEventListener('beforeinput', (e) => {
+            const x = liveOf(e.target);
+            if (!x) return;
+            replaced = selIn(x);
+            const t = e.inputType;
+            const sp = spot(x);
+            if (!sp) { e.preventDefault(); return; }
+            const long = isLong(sp.path, sp.value);
+            if (/^format|^history|FromDrop$/.test(t)) {
+                e.preventDefault();
+                if (t === 'historyUndo') undoLive();
+                if (t === 'historyRedo') redoLive();
+                if (t === 'formatBold') format(x, { b: true });
+                if (t === 'formatItalic') format(x, { i: true });
+                return;
+            }
+            if (t === 'insertParagraph' || t === 'insertLineBreak') {
+                e.preventDefault();
+                if (t === 'insertParagraph' && SPLITS.test(sp.owner.tagName)) {
+                    // a new paragraph: the words after the caret move to the element after this one
+                    const [a, b] = replaced ?? [0, 0];
+                    const part = editRead(sp.part, a, b, '');
+                    const [s] = readSpan(part, a, a);
+                    const next = splice(sp.value, sp.s, sp.e, fromChars(`${plain(part).slice(0, s)}\n\n${plain(part).slice(s)}`,
+                        [...authorsByChar(part).slice(0, s), 'me', 'me', ...authorsByChar(part).slice(s)]));
+                    commit(sp, next, sp.j + 1, 0);
+                } else if (long) typeAt(x, '\n');
+                return;
+            }
+            const [a, b] = replaced ?? [0, 0];
+            // backspace at the start of a paragraph joins it to the one before; delete at its end, to the one after
+            const join = a === b && ((t === 'deleteContentBackward' && a === 0 && sp.j > 0) || (t === 'deleteContentForward' && a === readOf(sp.part).words.length && sp.j < sp.spans.length - 1));
+            if (join) {
+                e.preventDefault();
+                const k = t === 'deleteContentBackward' ? sp.j - 1 : sp.j;
+                const keep = readOf(slice(sp.value, ...sp.spans[k])).words.length;
+                commit(sp, splice(sp.value, sp.spans[k][1], sp.spans[k + 1][0], ''), k, keep);
+            }
+        });
+        document.addEventListener('input', (e) => { const x = liveOf(e.target); if (x && !e.isComposing) reconcile(x); });
+        document.addEventListener('compositionstart', (e) => { const x = liveOf(e.target); if (x) replaced = selIn(x); });
+        document.addEventListener('compositionend', (e) => { const x = liveOf(e.target); if (x) reconcile(x); });
+        document.addEventListener('paste', (e) => {
+            const x = liveOf(e.target);
+            if (!x) return;
+            e.preventDefault();
+            const sp = spot(x);
+            const pasted = pastedIn(e);
+            const words = pasted?.words ?? (e.clipboardData?.getData('text/plain') ?? '').replace(/\r\n?/g, '\n');
+            const [a, b] = selIn(x) ?? [0, 0];
+            let part = editRead(sp.part, a, b, words, pasted ? '\u0000' : 'me');
+            if (pasted) {
+                // copied from a text: each letter keeps its author (and an escape takes its letter's)
+                const who = [];
+                for (let i = 0; i < words.length; i++) { if (/[\\*`[\]{]/.test(words[i])) who.push(pasted.authors[i]); who.push(pasted.authors[i]); }
+                part = overlay(part, authorsByChar(part).indexOf('\u0000'), who);
+            }
+            commit(sp, splice(sp.value, sp.s, sp.e, part), sp.j, a + words.length);
+        }, true);
+        document.addEventListener('drop', (e) => { if (liveOf(e.target)) e.preventDefault(); }, true);
+        function undoLive(redo) {
+            const from = redo ? liveRedo : liveUndo;
+            const to = redo ? liveUndo : liveRedo;
+            const u = from.pop();
+            if (!u) return;
+            to.push({ ...u, value: get(u.path) });
+            lastPush = 0;
+            // the caret goes after what came back
+            const was = readOf(get(u.path)).words;
+            const r = readOf(u.value);
+            let pre = 0;
+            let end = 0;
+            while (pre < was.length && pre < r.words.length && was[pre] === r.words[pre]) pre++;
+            while (end < was.length && end < r.words.length && was[was.length - 1 - end] === r.words[r.words.length - 1 - end]) end++;
+            const k = Math.max(pre, r.words.length - end);
+            const src = k < r.words.length ? r.at[k] : plain(u.value).length;
+            const spans = SPLITS.test(u.owner.tagName) ? paragraphSpans(u.value, true) : [[0, plain(u.value).length]];
+            const j = Math.max(0, spans.findIndex(([, e]) => src <= e));
+            put(u.path, u.value, u.owner, j, r.at.filter((i) => i >= spans[j][0] && i < src).length);
+        }
+        const redoLive = () => undoLive(true);
+        document.addEventListener('keydown', (e) => {
+            const x = liveOf(e.target);
+            if (!x) return;
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redoLive(); else undoLive(); return; }
+            const style = { b: 'b', i: 'i', e: 'code' }[e.key.toLowerCase()];
+            if ((e.metaKey || e.ctrlKey) && !e.altKey && style) { e.preventDefault(); format(x, { [style]: true }); return; }
+            if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); linkAt(x); return; }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'u') { e.preventDefault(); return; }
+            if (e.key === 'Escape') x.blur();
+            e.stopPropagation(); // the page's own shortcuts stay out of the typing
+        }, true);
+        // the page's own handlers stay out of a click into a text, and a link in it isn't followed
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick'].forEach((type) => document.addEventListener(type, (e) => {
+            if (!liveOf(e.target)) return;
+            e.stopPropagation();
+            if (type === 'click' && e.target.closest('a')) e.preventDefault();
+        }, true));
+        document.addEventListener('focusin', (e) => {
+            const x = liveOf(e.target);
+            if (!x || x === liveEl) return;
+            liveEl = x;
+            const sp = spot(x);
+            if (!sp) return;
+            document.querySelectorAll('.slop-focus, .slop-copy').forEach((y) => y.classList.remove('slop-focus', 'slop-copy'));
+            elementsOf(sp.path).forEach((y) => y.classList.add('slop-focus'));
+            float.innerHTML = '';
+            floatCtl = control(() => [sp.path], `"${where(sp.path)}"`);
+            floatCtl.prepend(floatCtl.pie);
+            float.append(floatCtl);
+            showAssign(float, x, [sp.path]);
+            float.hidden = false;
+            numbers();
+            paintFloat();
+        });
+        document.addEventListener('focusout', (e) => {
+            if (!liveOf(e.target)) return;
+            // focus going to another text, or into the row (⌘K's link form): the row stays. Without a click, focusout
+            // comes before the focus lands, so where it's going is relatedTarget
+            const to = e.relatedTarget;
+            if (to && (liveOf(to) || float.contains(to))) return;
+            afterClick(() => {
+                const a = document.activeElement;
+                if (liveOf(a) || float.contains(a)) return;
+                hideFloat();
+            });
+        });
+        function hideFloat() {
+            liveEl = null;
+            floatCtl = null;
+            float.hidden = true;
+            document.querySelectorAll('.slop-focus, .slop-copy').forEach((y) => y.classList.remove('slop-focus', 'slop-copy'));
+        }
+        // above the text, or under it when there's no room
+        function paintFloat() {
+            if (!liveEl || float.hidden) return;
+            const r = liveEl.getBoundingClientRect();
+            const h = float.offsetHeight;
+            const w = float.offsetWidth;
+            const top = r.top - h - 10 > 8 ? r.top - h - 10 : r.bottom + 10;
+            float.style.top = `${Math.round(top)}px`;
+            float.style.left = `${Math.round(Math.min(Math.max(8, r.left), innerWidth - w - 8))}px`;
+        }
+        addEventListener('scroll', paintFloat, { capture: true, passive: true });
+        addEventListener('resize', paintFloat);
+        new ResizeObserver(paintFloat).observe(float); // a row that grows (a new category's form) moves up
 
         // saving: only with the Save button (or ⌘S), one request at a time, each carrying the version it was based on.
         // `saved` is the text as of the last save, for the Save button's count and each text's Revert
@@ -1975,7 +2503,7 @@ const Slop = (() => {
         addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 's' && !aside.hidden) { e.preventDefault(); save(); }
             // ⌘Z outside a text undoes the last switch or mark (a text's own ⌘Z undoes its typing)
-            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'z' && undo && !aside.hidden && !e.target.closest?.('textarea, input')) {
+            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'z' && undo && !aside.hidden && !e.target.closest?.('textarea, input, [contenteditable="true"]')) {
                 e.preventDefault();
                 statusEl.querySelector('.sp-link')?.click();
             }
@@ -1988,9 +2516,11 @@ const Slop = (() => {
 
         // while the editor is open, a click on a text opens it in the editor
         document.addEventListener('click', (e) => {
-            if (aside.hidden || aside.contains(e.target) || btn.contains(e.target)) return;
+            if (aside.hidden || aside.contains(e.target) || float.contains(e.target)) return;
             const target = e.target.closest('[data-slop], [data-slop-ref], [data-slop-more], [data-slop-attr]');
             if (!target) return;
+            // typed into where it is: the panel only shows its box
+            if (liveOf(e.target)) { if (!inPlace) seek(pathOf(target)); return; }
             e.preventDefault();
             e.stopPropagation();
             const path = pathOf(target);
@@ -2010,6 +2540,7 @@ const Slop = (() => {
         try { rect = JSON.parse(store.get(RECT)) ?? {}; } catch { /* docked */ }
         function place() {
             aside.removeAttribute('style');
+            if (inPlace) return;
             if (narrow()) {
                 if (rect.sheet) aside.style.height = `${clamp(rect.sheet, 200, innerHeight - 16)}px`;
                 return;
@@ -2057,7 +2588,7 @@ const Slop = (() => {
             target.addEventListener('pointercancel', up);
         }
         const head = $('.sp-head');
-        head.addEventListener('pointerdown', (e) => { if (!e.target.closest('button')) drag(e, 'move'); });
+        head.addEventListener('pointerdown', (e) => { if (!e.target.closest('button') && !inPlace) drag(e, 'move'); });
         head.addEventListener('dblclick', (e) => {
             if (e.target.closest('button')) return;
             rect = {};
@@ -2069,16 +2600,15 @@ const Slop = (() => {
 
         const open = (on) => {
             aside.hidden = !on;
-            btn.hidden = on;
             document.documentElement.classList.toggle('slop-editing', on);
             editing = on;
             paintShow();
-            if (!on) { mark(false); unreveal(); closePicker(); return; }
+            livePage();
+            if (!on) { mark(false); unreveal(); closePicker(); hideFloat(); return; }
             place();
             render();
         };
-        btn.addEventListener('click', () => open(true));
-        $('.sp-close').addEventListener('click', () => open(false));
+        modeBtn.addEventListener('click', () => setPlace(!inPlace));
         aside.querySelectorAll('.sp-seg button').forEach((b) => b.addEventListener('click', () => {
             if (b.dataset.show === shows()) return;
             withUndo(`Readers see: ${b.textContent.toLowerCase()}`, () => {
@@ -2087,6 +2617,7 @@ const Slop = (() => {
             });
         }));
         aside.querySelectorAll('.sp-tabs button').forEach((b) => b.addEventListener('click', () => { state.tab = b.dataset.tab; render(); }));
+        setPlace(inPlace);
         savedStatus();
         try {
             const draft = JSON.parse(session.get(DRAFT));
@@ -2101,6 +2632,8 @@ const Slop = (() => {
                 });
             }
         } catch { /* none */ }
+        // the editor is open from the start: the page's words can be typed into, and the bar (or the panel) is there
+        if (aside.hidden) open(true);
         return { render: () => { if (!aside.hidden) render(); }, touched, open };
     }
 

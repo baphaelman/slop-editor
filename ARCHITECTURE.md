@@ -77,6 +77,8 @@ It's one IIFE that returns `Slop`. The sections are marked with `/* ---------- �
 
 Read `applyEdit` and `runs` first. Everything else builds on them.
 
+**Editing on the page** (the editor is open from the start, as the bar unless the panel was open last time; `inPlace` only shrinks the panel to its header) uses `parse` (what `runs` is built on), which also gives each character's place in the plain text and the markup's characters, paired. `readOf` is a text's words as they read (a `{name}` is one character, `OBJ`), `readSpan` maps a stretch of those back to the plain text, and `editRead` replaces a stretch of them: typed letters are escaped and mine, markup in and around the stretch stays, and a pair of marks left holding nothing goes. In the editor, `liven` sets `contenteditable` on every `[data-slop]` and `[data-slop-more]` element (not inside a button or label, not `data-slop-ref`), `live.on` makes `render` draw each `{name}` as a block that can't be typed into, with spaces at the ends kept as `&nbsp;` so the caret can sit after them. The browser changes the words; `reconcile` reads them back (`domWords`), finds what changed (the selection from `beforeinput`, as `applyEdit`'s `at`), and `commit` sets the text, refills the page, updates the text's box in the panel and puts the caret back. New paragraphs, line breaks, joins, paste and ⌘Z are done by the editor, not the browser, and so are ⌘B, ⌘I, ⌘E and ⌘K: `restyle` reads the text as styled letters, changes the selection's style, and writes the markup again with as few marks as it takes, each letter keeping its author. While editing on the page, a paragraph left empty still has an element (`paragraphSpans(value, true)`), so a new one can be typed into.
+
 ## How the editor gets the words back into the file
 
 - `start()` picks the editor:
@@ -134,6 +136,8 @@ The format already allows most of it (`_categories`, `_show`); the rules that wo
 - **A removed text can still be painted once.** `withUndo` repaints (`numbers()`) before the view is redrawn, so anything painting a field reads its value with `valueAt`, not `get`, which would warn about the missing text.
 - **Pages with inlined code need `slop-editor sync page.html`** after any change to `slop.js` or `slop.css` (or `slop-editor edit`, which syncs first). `index.html` links the files, so it doesn't.
 
+- **On the page, the element must render exactly as `fillOne` would.** Every fill compares `innerHTML` and rewrites what differs, and a rewrite loses the caret. That's why `render` itself draws the live-only parts (`live.on`), not something after it.
+- **On the page, spaces the page collapses can't be kept.** Two spaces in a row show as one, and the browser drops the hidden one when you type or delete next to it, so the text loses it too.
 - **The magnifier is a copy of the page.** While a dot is dragged, `.slop-sampler` holds a clone of `<body>`, so ids are doubled and the page's selectors match it too. Everything in it ignores the pointer, and `added` skips it. Anything that queries the document during the drag can find the copies.
 
 ## Running and testing

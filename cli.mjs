@@ -226,7 +226,7 @@ async function installReact(files, { auto, author, text, dry }) {
         if (!{ ...pkg.dependencies, ...pkg.devDependencies }['slop-editor']) todo.push('Add the package to the project: npm i slop-editor');
         if (todo.length) console.log(`\nStill to do:\n${todo.map((t) => `  - ${t}`).join('\n')}`);
     }
-    console.log('\nNext: run your dev server. The page gets an Edit text button, and saves go into the words file.\n'
+    console.log('\nNext: run your dev server. The page opens with the editor, and saves go into the words file.\n'
         + 'Readers see nothing until you pick what they see in the editor ("Readers see"); put <SlopMeter /> (from \'slop-editor/react\')\n'
         + 'where the meter should go. Texts the code builds (a title from a variable, text in a data array) are still yours to move:\n'
         + 'render them with <SlopText path="…" /> or Slop.words(\'…\'). Adding and removing paragraphs in the editor needs slopList.');
