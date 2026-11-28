@@ -268,7 +268,7 @@ const Slop = (() => {
     function paragraphSpans(value, empty) {
         const text = plain(value);
         const spans = [];
-        const gap = /\n[ \t]*\n\s*/g;
+        const gap = /\n[ \t]*\n(?:[ \t]*\n)*/g; // more blank lines too, but not the spaces a paragraph starts with
         let at = 0;
         for (let m; (m = gap.exec(text));) { spans.push([at, m.index]); at = m.index + m[0].length; }
         spans.push([at, text.length]);
@@ -315,10 +315,17 @@ const Slop = (() => {
                 const v = lookup(run.v, local);
                 h = v.html;
                 if (v.data) by = 'data';
-            } else h = esc(run.text).replace(/\n/g, '<br>');
-            // spaces at either end would collapse, and the caret couldn't go after one just typed
-            if (live.on && !run.v && run === all.at(-1)) h = h.replace(/ +$/, (m) => '&nbsp;'.repeat(m.length));
-            if (live.on && !run.v && run === all[0]) h = h.replace(/^ +/, (m) => '&nbsp;'.repeat(m.length));
+            } else h = esc(run.text);
+            // spaces at either end of a line, or after another space, would collapse: the browser would drop one when
+            // you type next to it, and the caret couldn't go after one just typed. While editing they're drawn so they don't
+            if (live.on && !run.v) {
+                const i = all.indexOf(run);
+                const nb = (m) => '&nbsp;'.repeat(m.length);
+                h = h.replace(/ +(?=\n)/g, nb).replace(/(?<=\n) +/g, nb).replace(/ {2,}/g, (m) => `${nb(m.slice(1))} `);
+                if (i === all.length - 1 || all[i + 1].text?.startsWith('\n')) h = h.replace(/ +$/, nb);
+                if (i === 0 || /[\n ]$/.test(all[i - 1].text ?? '')) h = h.replace(/^ +/, nb);
+            }
+            if (!run.v) h = h.replace(/\n/g, '<br>');
             h = `<span class="${cls(by)}"${run.v && live.on ? ' contenteditable="false" data-slop-v=""' : ''}>${h}</span>`;
             if (run.key) h = `<kbd>${h}</kbd>`;
             if (run.code) h = `<span class="${config.code}">${h}</span>`;
@@ -518,13 +525,17 @@ const Slop = (() => {
     const SPLITS = /^(P|LI|DD)$/;
     const spills = new WeakMap(); // element → the copies after it
     const ownerOf = new WeakMap(); // copy → its element
+    // what the browser gives back as an element's innerHTML once it's set to h (a " in the words comes back bare, not
+    // as &quot;): compared with that, an element that already shows its text isn't written again, and keeps the caret
+    let shape = null;
+    const asSet = (h) => { shape ??= document.createElement('template'); shape.innerHTML = h; return shape.innerHTML; };
     function fillOne(el) {
         const local = el.dataset.slopVars ? JSON.parse(el.dataset.slopVars) : undefined;
         if (el.dataset.slop) {
             const value = get(el.dataset.slop);
             const parts = !SPLITS.test(el.tagName) ? [value] : live.on ? paragraphSpans(value, true).map(([s, e]) => slice(value, s, e)) : paragraphsOf(value);
             const h = render(parts[0], local);
-            if (el.innerHTML !== h) el.innerHTML = h;
+            if (el.innerHTML !== asSet(h)) el.innerHTML = h;
             el.classList.toggle('slop-empty', !plain(value).trim());
             spill(el, parts.slice(1).map((v) => render(v, local)));
         }
@@ -546,7 +557,7 @@ const Slop = (() => {
                 copies.push(c);
             }
             c.dataset.slopMore = el.dataset.slop;
-            if (c.innerHTML !== h) c.innerHTML = h;
+            if (c.innerHTML !== asSet(h)) c.innerHTML = h;
             const before = i ? copies[i - 1] : el;
             if (before.nextElementSibling !== c) before.after(c);
         });
@@ -2318,7 +2329,7 @@ const Slop = (() => {
         function reconcile(x) {
             const sp = spot(x);
             if (!sp) return;
-            const before = readOf(sp.part).words;
+            const before = readOf(sp.part).words.replace(/\u00a0/g, ' '); // as domWords reads the page: a non-breaking space in the words stays
             let now = domWords(x);
             if (now.endsWith('\n') && !before.endsWith('\n') && x.lastChild?.nodeName === 'BR') now = now.slice(0, -1); // the browser's placeholder
             if (now === before) return;
@@ -2456,6 +2467,9 @@ const Slop = (() => {
         }, true));
         document.addEventListener('focusin', (e) => {
             const x = liveOf(e.target);
+            // the caret is in my color, as what's typed will be, not in the color of the words it's in. caret-color's
+            // currentColor would be the words' own, so it's set here: my category's color, or the element's ink
+            if (x) x.style.caretColor = colorOf('me', 0) ?? getComputedStyle(x).color;
             if (!x || x === liveEl) return;
             liveEl = x;
             const sp = spot(x);

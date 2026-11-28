@@ -722,6 +722,18 @@ try {
         await all(p);
     });
 
+    await check('a space typed at the start of a box stays', async () => {
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(0, 0));
+        await p.keyboard.type(' ');
+        assert.deepEqual(await get(p, 'how.p1'), [{ me: ' ' }, 'The agent wrote this.']);
+        await p.keyboard.type('x');
+        assert.deepEqual(await get(p, 'how.p1'), [{ me: ' x' }, 'The agent wrote this.']);
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
     await check('⌘⇧Z with no text focused does the last switch again', async () => {
         await p.click(`${field('how.p1')} .sp-toggle`);
         await p.keyboard.press('Meta+z');
@@ -755,6 +767,88 @@ try {
         await p.click('[data-slop="how.p1"]');
         await p.click('.slop-float .sp-toggle'); // a switch with nothing of its own to take back makes it all slop
         assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('typing mid-text keeps the caret where it is, with quotes in the words', async () => {
+        await p.evaluate(() => { Slop.set('list.p1', 'It\'s the "first" item.'); Slop.fill(); });
+        await p.waitForTimeout(50);
+        const x = await p.evaluate(() => { // just after "first"
+            const t = document.querySelector('[data-slop="list.p1"]').firstChild.firstChild;
+            const r = document.createRange();
+            r.setStart(t, 15);
+            const b = r.getBoundingClientRect();
+            return [b.left, b.top + b.height / 2];
+        });
+        await p.mouse.click(...x);
+        for (const ch of 'XYZ') { await p.keyboard.type(ch); await p.waitForTimeout(40); }
+        assert.deepEqual(await get(p, 'list.p1'), ['It\'s the "first', { me: 'XYZ' }, '" item.']);
+    });
+
+    await check('typing over a selection after a non-breaking space gives me only what I typed', async () => {
+        await p.evaluate(() => { Slop.set('list.p1', 'One\u00a0two three.'); Slop.fill(); });
+        await p.waitForTimeout(50);
+        const x = await p.evaluate(() => { // on the "t" of "three"
+            const t = document.querySelector('[data-slop="list.p1"]').firstChild.firstChild;
+            const r = document.createRange();
+            r.setStart(t, 8);
+            r.setEnd(t, 9);
+            const b = r.getBoundingClientRect();
+            return [b.left + 1, b.top + b.height / 2];
+        });
+        await p.mouse.click(...x);
+        await p.keyboard.press('Shift+ArrowRight');
+        await p.keyboard.type('T');
+        assert.deepEqual(await get(p, 'list.p1'), ['One\u00a0two ', { me: 'T' }, 'hree.']);
+    });
+
+    await check('the caret is in my color, in anyone\'s words', async () => {
+        await p.evaluate(() => { Slop.set('list.p1', 'First item.'); Slop.fill(); });
+        await p.click('[data-slop="list.p1"]');
+        const [caret, ink, ai] = await p.evaluate(() => { const s = document.querySelector('[data-slop="list.p1"] .slop-ai'); return [getComputedStyle(s).caretColor, getComputedStyle(s.parentElement).color, getComputedStyle(s).color]; });
+        assert.equal(caret, ink);
+        assert.notEqual(caret, ai);
+    });
+
+    await check('a space typed at the end of a line, before a line break, stays', async () => {
+        await p.evaluate(() => { Slop.set('list.p1', 'Best,\nMe'); Slop.fill(); });
+        const x = await p.evaluate(() => { // after "Best,"
+            const t = document.querySelector('[data-slop="list.p1"]').firstChild.firstChild;
+            const r = document.createRange();
+            r.setStart(t, 4);
+            r.setEnd(t, 5);
+            const b = r.getBoundingClientRect();
+            return [b.right - 1, b.top + b.height / 2];
+        });
+        await p.mouse.click(...x);
+        await p.keyboard.press('End');
+        for (const ch of ' x ') { await p.keyboard.type(ch); await p.waitForTimeout(40); }
+        assert.deepEqual(await get(p, 'list.p1'), ['Best,', { me: ' x ' }, '\nMe']);
+    });
+
+    await check('a space typed at the start of a text\'s second paragraph stays', async () => {
+        await p.mouse.click(5, 400);
+        await p.evaluate(() => { Slop.set('list.p1', 'One.\n\nTwo.'); Slop.fill(); });
+        await p.click('[data-slop-more="list.p1"]');
+        await p.keyboard.press('Meta+ArrowUp');
+        for (const ch of ' x') { await p.keyboard.type(ch); await p.waitForTimeout(40); }
+        assert.deepEqual(await get(p, 'list.p1'), ['One.\n\n', { me: ' x' }, 'Two.']);
+    });
+
+    await check('a space typed next to another one keeps both', async () => {
+        await p.mouse.click(5, 400); // away: the row over the text goes
+        await p.waitForSelector('.slop-float', { state: 'hidden' });
+        await p.evaluate(() => { Slop.set('list.p1', 'One two.'); Slop.fill(); });
+        const x = await p.evaluate(() => { // after "One"
+            const t = document.querySelector('[data-slop="list.p1"]').firstChild.firstChild;
+            const r = document.createRange();
+            r.setStart(t, 2);
+            r.setEnd(t, 3);
+            const b = r.getBoundingClientRect();
+            return [b.right - 1, b.top + b.height / 2];
+        });
+        await p.mouse.click(...x);
+        for (const ch of ' x') { await p.keyboard.type(ch); await p.waitForTimeout(40); }
+        assert.deepEqual(await get(p, 'list.p1'), ['One', { me: ' x' }, ' two.']);
     });
     await p.close();
 
