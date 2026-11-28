@@ -883,7 +883,6 @@ const Slop = (() => {
         const state = { tab: startTab(), open: new Set(groupKeys().slice(0, 1)), known: new Set(groupKeys()), focus: null };
         let sets = repeats(entries());
         let controls = []; // [{el, paths}] in the current view, repainted by numbers()
-        let undo = null;
 
         const aside = el('aside', 'slop-panel', `
           <header class="sp-head" title="Drag to move, or drag an edge to resize. Double-click to put it back">
@@ -933,44 +932,152 @@ const Slop = (() => {
             ? status('Saved in this browser', '', { label: 'Reset', run: reset })
             : status(`Saved · version ${text.version}`));
 
-        // any change to who wrote what (the slop switch, marking text, deleting a category) can be undone
-        function withUndo(what, change) {
-            const before = JSON.stringify(text);
+        /* one history for every change to the words or who wrote them: typing (on the page or in a box), a switch, a
+           mark, a revert, a category deleted. ⌘Z undoes the last step wherever the focus is, and ⌘⇧Z does it again. A
+           step keeps only the top-level keys it changed, before and after, so undoing it leaves the rest as it is now */
+        const undos = []; // [{what, at, typing, typed, order: [keys before, after], keys: {key: [JSON before, after]}}]
+        const redos = [];
+        let noted = false; // the status line names the last step, with its Undo or Redo
+        let lastPush = 0;
+        const snap = () => Object.fromEntries(Object.keys(text).filter((k) => k !== 'version').map((k) => [k, JSON.stringify(text[k])]));
+        // `at`: the text it was made in, to put the focus back ({path, where: 'page' or 'panel', owner, sel}); `typing`:
+        // keystrokes of one kind in one text join the step before them; `typed`: only words changed, nothing to redraw
+        function track(change, { what = '', at = null, typing = '', typed = false } = {}) {
+            const a = snap();
             change();
-            if (JSON.stringify(text) === before) return false;
+            const b = snap();
+            const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => a[k] !== b[k]);
+            if (!keys.length) return false;
+            const now = performance.now();
+            const top = undos.at(-1);
+            if (typing && !redos.length && top?.typing === typing && top.at?.path === at?.path && now - lastPush < 800) {
+                keys.forEach((k) => { if (k in top.keys) top.keys[k][1] = b[k]; else top.keys[k] = [a[k], b[k]]; });
+                top.order[1] = Object.keys(b);
+            } else {
+                undos.push({ what, at, typing, typed, order: [Object.keys(a), Object.keys(b)], keys: Object.fromEntries(keys.map((k) => [k, [a[k], b[k]]])) });
+                if (undos.length > 300) undos.shift();
+            }
+            lastPush = now;
+            redos.length = 0;
+            return true;
+        }
+        function note(what, undone) {
+            noted = true;
+            status(undone ? `Undone: ${what}` : what, '', undone ? { label: 'Redo', run: () => step(false) } : { label: 'Undo', run: () => step(true) });
+        }
+        // a change made with a button (a switch, a mark, a revert, deleting a category), named in the status line
+        function withUndo(what, change, at = null) {
+            if (!track(change, { what, at })) return false;
             touched();
             if (state.tab === 'slop') render(); else numbers();
-            undo = before;
-            status(what, '', {
-                label: 'Undo',
-                run: () => {
-                    if (!undo) return;
-                    const version = text.version;
-                    text = JSON.parse(undo);
-                    text.version = version;
-                    undo = null;
-                    applyColors();
-                    touched();
-                    render();
-                },
-            });
+            // a mark: the page shows it now, not a frame later, and its words stay selected to mark again
+            if (at) { fill(); liven(); putBack(at); }
+            note(what, false);
             return true;
+        }
+        // undo (back) or redo the last step, and put the focus back where it was made
+        function step(back) {
+            const u = (back ? undos : redos).pop();
+            if (!u) return false;
+            (back ? redos : undos).push(u);
+            lastPush = 0;
+            const i = back ? 0 : 1;
+            const was = u.at ? valueAt(text, u.at.path) : undefined;
+            // the focus stays in a text a step made elsewhere passes over
+            const a = document.activeElement;
+            const kept = liveOf(a) ? { x: a, sel: selIn(a) } : a?.tagName === 'TEXTAREA' && body.contains(a) ? { path: a.closest('.sp-field')?.dataset.path, sel: [a.selectionStart, a.selectionEnd] } : null;
+            const next = { version: text.version };
+            const order = u.order[i];
+            [...order, ...Object.keys(text).filter((k) => !order.includes(k))].forEach((k) => {
+                if (k === 'version') return;
+                const v = k in u.keys ? u.keys[k][i] : JSON.stringify(text[k]);
+                if (v !== undefined) next[k] = JSON.parse(v);
+            });
+            text = next;
+            noted = false;
+            if ('_categories' in u.keys) applyColors();
+            fill(); // now, so the caret put back below isn't lost to the next frame's fill
+            liven();
+            if (u.typed) body.querySelectorAll('.sp-field').forEach((f) => { if (f.input) { f.input.value = plain(valueAt(text, f.dataset.path) ?? ''); grow(f.input); } });
+            touched();
+            if (!u.typed) render();
+            if (u.at) putBack(u.at, was);
+            else if (kept?.x?.isConnected) {
+                kept.x.focus({ preventScroll: true });
+                const n = domWords(kept.x).length;
+                if (kept.sel) caret(kept.x, Math.min(kept.sel[0], n), Math.min(kept.sel[1], n));
+            } else if (kept?.path) {
+                const box = boxOf(kept.path)?.input;
+                box?.focus({ preventScroll: true });
+                box?.setSelectionRange(...kept.sel);
+            }
+            if (u.what) note(u.what, back);
+            return true;
+        }
+        const boxOf = (path) => [...body.querySelectorAll('.sp-field')].find((f) => f.paths().includes(path));
+        // the caret back in the text a step was made in: on the selection it was made on, or after what came back
+        function putBack({ path, where, owner, sel }, was) {
+            const value = valueAt(text, path);
+            if (value === undefined) return;
+            let [s, e] = sel ?? [];
+            if (!sel) {
+                const x = plain(was ?? '');
+                const y = plain(value);
+                let pre = 0;
+                let end = 0;
+                while (pre < x.length && pre < y.length && x[pre] === y[pre]) pre++;
+                while (end < x.length - pre && end < y.length - pre && x[x.length - 1 - end] === y[y.length - 1 - end]) end++;
+                s = e = y.length - end;
+            }
+            const box = !inPlace && boxOf(path)?.input;
+            const x = owner?.isConnected ? owner : elementsOf(path).find((y) => y.dataset.slop && y.isContentEditable);
+            if (box && (where === 'panel' || !x)) {
+                box.focus();
+                box.setSelectionRange(s, e);
+                return;
+            }
+            if (!x) return;
+            // on the page: the paragraph it's in, and how far into its words
+            const spans = SPLITS.test(x.tagName) ? paragraphSpans(value, true) : [[0, plain(value).length]];
+            const j = Math.max(0, spans.findIndex(([, b]) => s <= b));
+            const y = shownAt(x, j) ?? x;
+            const { at } = readOf(value);
+            const k = (n) => at.filter((m) => m >= spans[j][0] && m < Math.min(n, spans[j][1])).length;
+            if (document.activeElement !== y) y.focus();
+            caret(y, k(s), k(e));
+            paintFloat();
         }
 
         /* the slop switch, next to a pie of what the texts are made of. A text's or section's row takes the pie out, to
-           sit by its name, and puts the switch at the end (c.pie, c.toggle) */
-        function control(paths, what, after) {
+           sit by its name, and puts the switch at the end (c.pie, c.toggle). Switched back on, a switch takes back only
+           what it approved, where the words are still as it left them, so what was approved before stays approved; with
+           none of that left, it makes every approved word slop again. `id` names the switch, `what` (a string or a
+           function) the texts, and `scope` (a function) says in its tooltip what it covers */
+        const approvals = new Map(); // path → {by, was, now}: the last switch that approved it, and the text before and after
+        function control(paths, what, { after, id = what, scope } = {}) {
             const c = el('span', 'sp-ctl', '<span class="sp-pie" role="img"></span>'
                 + '<button type="button" class="sp-toggle" role="switch"><span class="sp-switch" aria-hidden="true"></span>slop</button>');
             const toggle = c.querySelector('.sp-toggle');
             toggle.addEventListener('click', (e) => {
                 e.preventDefault(); // in a section's summary, don't open or close it
                 const on = toggle.getAttribute('aria-checked') === 'true';
-                const done = withUndo(on ? `Approved ${what}` : `Back to slop: ${what}`, () => paths().forEach((p) => set(p, on ? unslop(get(p)) : reslop(get(p)))));
+                const ps = paths();
+                const name = typeof what === 'function' ? what() : what;
+                const mine = on ? [] : ps.filter((p) => approvals.get(p)?.by === id && approvals.get(p).now === JSON.stringify(get(p)));
+                const done = withUndo(on ? `Approved ${name}` : `Back to slop: ${name}`, () => ps.forEach((p) => {
+                    const was = get(p);
+                    if (on) {
+                        set(p, unslop(was));
+                        if (JSON.stringify(get(p)) !== JSON.stringify(was)) approvals.set(p, { by: id, was, now: JSON.stringify(get(p)) });
+                    } else if (!mine.length) set(p, reslop(was));
+                    else if (mine.includes(p)) set(p, approvals.get(p).was);
+                }));
                 if (done) after?.(on);
             });
             c.pie = c.querySelector('.sp-pie');
             c.toggle = toggle;
+            c.paths = paths;
+            c.scope = scope;
             controls.push({ el: c, paths });
             return c;
         }
@@ -984,8 +1091,8 @@ const Slop = (() => {
             const on = (m.counts.ai ?? 0) > 0;
             toggle.setAttribute('aria-checked', String(on));
             toggle.disabled = !on && !m.counts.ok;
-            toggle.title = on ? 'Slop. Switch it off to approve the AI\'s words as they are'
-                : m.counts.ok ? 'Approved. Switch it on to make it slop again' : 'No AI-generated words here';
+            toggle.title = (c.scope ? `${c.scope()}: ` : '') + (on ? 'Slop. Switch it off to approve the AI\'s words as they are'
+                : m.counts.ok ? 'Approved. Switch it on to make it slop again' : 'No AI-generated words here');
         }
 
         /* categories: a color picker and a name for each, and how much of the page is theirs */
@@ -1502,9 +1609,10 @@ const Slop = (() => {
                 b.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the focus and the selection
                 b.addEventListener('click', () => {
                     let [s, e, n] = selOf(input);
+                    const at = markedIn(input, paths[0], [s, e]);
                     const whole = s === e;
                     if (whole) [s, e] = [0, n];
-                    withUndo(`Marked ${whole ? 'the text' : 'the selection'} as ${cat.label}`, () => paths.forEach((p) => set(p, assign(get(p), s, e, cat.id))));
+                    withUndo(`Marked ${whole ? 'the text' : 'the selection'} as ${cat.label}`, () => paths.forEach((p) => set(p, assign(get(p), s, e, cat.id))), at);
                 });
                 assignEl.append(b);
             });
@@ -1536,7 +1644,7 @@ const Slop = (() => {
                     withUndo(s < e ? `Added "${label}" and marked the selection as it` : `Added "${label}"`, () => {
                         Object.assign(own(id), { label, color }, desc.value.trim() ? { about: desc.value.trim() } : {});
                         if (s < e) paths.forEach((p) => set(p, assign(get(p), s, e, id)));
-                    });
+                    }, markedIn(input, paths[0], [s, e]));
                     applyColors();
                     if (!inPlace) renderCats();
                     back();
@@ -1548,6 +1656,8 @@ const Slop = (() => {
             });
             return plus;
         }
+        // where a mark was made, so ⌘Z there takes it back and selects the words again
+        const markedIn = (input, path, sel) => (input.tagName === 'TEXTAREA' ? { path, where: 'panel', sel } : { path, where: 'page', owner: spot(input)?.owner, sel });
         const assignLabel = (input) => {
             const [s, e] = selOf(input);
             if (assignEl.firstChild) assignEl.firstChild.textContent = s === e ? 'Mark all as' : 'Mark selection as';
@@ -1641,7 +1751,7 @@ const Slop = (() => {
             }
             // a copy's switch changes that copy only, and says so. A Repeats card's switch changes every copy.
             // The row reads: name and pie, then at the end anything else, the trash can and the switch
-            const ctl = control(paths, all ? count(all.paths.length, 'copy', 'copies') : `"${where(path)}"`, all ? null : (approved) => {
+            const ctl = control(paths, all ? count(all.paths.length, 'copy', 'copies') : `"${where(path)}"`, { id: all ? `copies:${all.paths.join(' ')}` : `text:${path}`, after: all ? null : (approved) => {
                 const others = (setOf(path)?.paths ?? []).filter((p) => p !== path);
                 if (!others.length) return;
                 const how = approved ? unslop : reslop;
@@ -1649,12 +1759,19 @@ const Slop = (() => {
                     label: others.length === 1 ? 'Change it too' : 'Change them too',
                     run: () => withUndo(`${approved ? 'Approved' : 'Back to slop:'} ${count(others.length + 1, 'copy', 'copies')}`, () => others.forEach((p) => set(p, how(get(p))))),
                 });
-            });
+            } });
             row.before(ctl.pie);
             if (listItem) row.append(removeButton(path, wrap));
             row.append(ctl);
             // the stretch a keystroke or a paste replaces: the selection, or nothing at the caret
-            input.addEventListener('beforeinput', () => { input.at = [input.selectionStart, input.selectionEnd]; });
+            input.addEventListener('beforeinput', (e) => {
+                input.at = [input.selectionStart, input.selectionEnd];
+                if (/^history/.test(e.inputType) && e.cancelable) { e.preventDefault(); step(e.inputType === 'historyUndo'); } // from the Edit menu
+            });
+            // ⌘Z is the editor's: it takes back marks and switches too, and the words come back with their authors
+            input.addEventListener('keydown', (e) => {
+                if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') { e.preventDefault(); step(!e.shiftKey); }
+            });
             input.addEventListener('input', (e) => {
                 const restoring = /^history(Undo|Redo)$/.test(e.inputType);
                 const pasted = e.inputType === 'insertFromPaste' ? input.pasted : null;
@@ -1691,7 +1808,7 @@ const Slop = (() => {
             det.dataset.group = key;
             det.open = state.open.has(key) || state.tab === 'hidden'; // there are few, so all of them show
             const all = () => entries(text[key], [key]).map(([p]) => p);
-            const ctl = control(all, `"${groupTitle(key)}"`);
+            const ctl = control(all, `"${groupTitle(key)}"`, { id: `group:${key}` });
             det.querySelector('.sp-gname').after(ctl.pie);
             det.querySelector('summary').append(ctl);
             det.addEventListener('toggle', () => {
@@ -1890,7 +2007,7 @@ const Slop = (() => {
                 row.querySelector('.sp-cat-pct').textContent = percent(page.letters ? (page.counts[row.dataset.id] ?? 0) / page.letters : 0);
             });
             controls.forEach((c) => paintControl(c, cats));
-            if (floatCtl && !controls.some((c) => c.el === floatCtl)) paintControl({ el: floatCtl, paths: () => [spot(liveEl)?.path].filter(Boolean) }, cats);
+            if (floatCtl && !controls.some((c) => c.el === floatCtl)) paintControl({ el: floatCtl, paths: floatCtl.paths }, cats);
             body.querySelectorAll('.sp-goto').forEach((go) => {
                 const m = makeup([get(go.dataset.path)]);
                 go.querySelector('.sp-pie').style.background = gradient(m, cats);
@@ -2023,7 +2140,8 @@ const Slop = (() => {
         const grow = (x) => { x.style.height = 'auto'; x.style.height = `${x.scrollHeight + 2}px`; };
 
         // typing: what you type is yours, the rest keeps its author
-        // ⌘Z in a text: the words come back with whoever wrote them, from each text's recent versions
+        // the browser's own undo, where it can't be stopped (the Edit menu, in some browsers): the words come back with
+        // whoever wrote them, from each text's recent versions
         const past = new Map(); // path → [value, …], oldest first
         function remember(p) {
             const list = past.get(p) ?? [];
@@ -2034,15 +2152,16 @@ const Slop = (() => {
         const recall = (p, words) => past.get(p)?.findLast((v) => plain(v) === words);
         // `pasted`: words copied from a text, with their authors, now at `at`
         function edit(paths, input, restoring, at, pasted) {
-            undo = null;
+            noted = false;
             const f = state.focus;
             const keep = pasted && at && input.value.startsWith(pasted.words, at[0]);
-            [...paths, ...(f?.linked ?? [])].forEach((p) => {
+            const kind = input.value.length < plain(get(paths[0])).length ? 'delete' : 'type';
+            track(() => [...paths, ...(f?.linked ?? [])].forEach((p) => {
                 remember(p);
                 const next = applyEdit(get(p), input.value, restoring ? recall(p, input.value) : undefined, at);
                 set(p, keep ? overlay(next, at[0], pasted.authors) : next);
                 remember(p);
-            });
+            }), { at: { path: paths[0], where: 'panel' }, typing: restoring || pasted ? '' : kind, typed: true });
             grow(input);
             if (f?.copies.length && !f.linked) {
                 // a copy changed on its own: offer to change the others the same way
@@ -2172,22 +2291,14 @@ const Slop = (() => {
         }
 
         // the words in an element, after a change: into the text, and the element (and every other showing it) redrawn
-        const liveUndo = []; // [{path, value, owner}], ⌘Z on the page
-        const liveRedo = [];
-        let lastPush = 0;
-        let lastKind = '';
+        // `coalesce`: a keystroke, which joins the ones before it in one step of ⌘Z
         function commit(sp, value, j, at, coalesce, to = at) {
-            const now = performance.now();
             const kind = plain(value).length < plain(sp.value).length ? 'delete' : 'type';
-            if (!coalesce || now - lastPush > 800 || liveUndo.at(-1)?.path !== sp.path || kind !== lastKind) liveUndo.push({ path: sp.path, value: sp.value, owner: sp.owner });
-            lastPush = now;
-            lastKind = kind;
-            liveRedo.length = 0;
-            put(sp.path, value, sp.owner, j, at, to);
+            put(sp.path, value, sp.owner, j, at, to, coalesce ? kind : '');
         }
-        function put(path, value, owner, j, at, to = at) {
-            undo = null;
-            set(path, value);
+        function put(path, value, owner, j, at, to = at, typing = '') {
+            noted = false;
+            track(() => set(path, value), { at: { path, where: 'page', owner }, typing, typed: true });
             fill();
             liven();
             body.querySelectorAll('.sp-field').forEach((f) => {
@@ -2276,8 +2387,8 @@ const Slop = (() => {
             const long = isLong(sp.path, sp.value);
             if (/^format|^history|FromDrop$/.test(t)) {
                 e.preventDefault();
-                if (t === 'historyUndo') undoLive();
-                if (t === 'historyRedo') redoLive();
+                if (t === 'historyUndo') step(true);
+                if (t === 'historyRedo') step(false);
                 if (t === 'formatBold') format(x, { b: true });
                 if (t === 'formatItalic') format(x, { i: true });
                 return;
@@ -2326,31 +2437,10 @@ const Slop = (() => {
             commit(sp, splice(sp.value, sp.s, sp.e, part), sp.j, a + words.length);
         }, true);
         document.addEventListener('drop', (e) => { if (liveOf(e.target)) e.preventDefault(); }, true);
-        function undoLive(redo) {
-            const from = redo ? liveRedo : liveUndo;
-            const to = redo ? liveUndo : liveRedo;
-            const u = from.pop();
-            if (!u) return;
-            to.push({ ...u, value: get(u.path) });
-            lastPush = 0;
-            // the caret goes after what came back
-            const was = readOf(get(u.path)).words;
-            const r = readOf(u.value);
-            let pre = 0;
-            let end = 0;
-            while (pre < was.length && pre < r.words.length && was[pre] === r.words[pre]) pre++;
-            while (end < was.length && end < r.words.length && was[was.length - 1 - end] === r.words[r.words.length - 1 - end]) end++;
-            const k = Math.max(pre, r.words.length - end);
-            const src = k < r.words.length ? r.at[k] : plain(u.value).length;
-            const spans = SPLITS.test(u.owner.tagName) ? paragraphSpans(u.value, true) : [[0, plain(u.value).length]];
-            const j = Math.max(0, spans.findIndex(([, e]) => src <= e));
-            put(u.path, u.value, u.owner, j, r.at.filter((i) => i >= spans[j][0] && i < src).length);
-        }
-        const redoLive = () => undoLive(true);
         document.addEventListener('keydown', (e) => {
             const x = liveOf(e.target);
             if (!x) return;
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redoLive(); else undoLive(); return; }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.stopPropagation(); step(!e.shiftKey); return; }
             const style = { b: 'b', i: 'i', e: 'code' }[e.key.toLowerCase()];
             if ((e.metaKey || e.ctrlKey) && !e.altKey && style) { e.preventDefault(); format(x, { [style]: true }); return; }
             if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); linkAt(x); return; }
@@ -2373,7 +2463,14 @@ const Slop = (() => {
             document.querySelectorAll('.slop-focus, .slop-copy').forEach((y) => y.classList.remove('slop-focus', 'slop-copy'));
             elementsOf(sp.path).forEach((y) => y.classList.add('slop-focus'));
             float.innerHTML = '';
-            floatCtl = control(() => [sp.path], `"${where(sp.path)}"`);
+            // a heading's switch covers its section
+            const { owner, path } = sp;
+            const paths = () => (rankOf(owner) ? sectionUnder(owner) : [path]);
+            const under = () => paths().length - 1;
+            floatCtl = control(paths, () => `"${where(path)}"${under() ? ` and ${count(under(), 'text')} under it` : ''}`, {
+                id: `${rankOf(owner) ? 'section' : 'text'}:${path}`,
+                scope: rankOf(owner) ? () => `This heading and ${count(under(), 'text')} under it` : null,
+            });
             floatCtl.prepend(floatCtl.pie);
             float.append(floatCtl);
             showAssign(float, x, [sp.path]);
@@ -2382,8 +2479,8 @@ const Slop = (() => {
             paintFloat();
         });
         document.addEventListener('focusout', (e) => {
-            if (!liveOf(e.target)) return;
-            // focus going to another text, or into the row (⌘K's link form): the row stays. Without a click, focusout
+            if (!liveOf(e.target) && !float.contains(e.target)) return;
+            // focus going to another text, or into the row (its switch, ⌘K's link form): the row stays. Without a click, focusout
             // comes before the focus lands, so where it's going is relatedTarget
             const to = e.relatedTarget;
             if (to && (liveOf(to) || float.contains(to))) return;
@@ -2393,6 +2490,22 @@ const Slop = (() => {
                 hideFloat();
             });
         });
+        // a heading's section on the page: it and every text after it up to the next heading as big or bigger, in the
+        // heading's group of the block (so a page's title isn't the whole page)
+        const rankOf = (x) => { const m = /^H([1-6])$/.exec(x.tagName); return m ? +m[1] : x.getAttribute('role') === 'heading' ? +(x.getAttribute('aria-level') || 2) : 0; };
+        function sectionUnder(owner) {
+            const path = owner.dataset.slop;
+            const top = keysOf(path)[0];
+            const out = [path];
+            const all = [...document.querySelectorAll('[data-slop], [data-slop-attr], h1, h2, h3, h4, h5, h6, [role="heading"]')].filter((x) => !x.closest('.slop-panel, .slop-float, .slop-sampler'));
+            if (!all.includes(owner)) return out;
+            for (const x of all.slice(all.indexOf(owner) + 1)) {
+                const r = rankOf(x);
+                if (r && r <= rankOf(owner)) break;
+                [x.dataset.slop, ...attrsOf(x).map(([, p]) => p)].forEach((p) => { if (p && keysOf(p)[0] === top && !out.includes(p) && valueAt(text, p) !== undefined) out.push(p); });
+            }
+            return out;
+        }
         function hideFloat() {
             liveEl = null;
             floatCtl = null;
@@ -2449,7 +2562,6 @@ const Slop = (() => {
                 const kept = store.set(LOCAL, JSON.stringify({ base: JSON.parse(original).version, baseText: JSON.parse(original), text: JSON.parse(body) }));
                 if (!kept) { status("Couldn't save in this browser", 'error'); return; }
                 saved = JSON.parse(body);
-                undo = null;
                 keepDraft();
                 savedStatus();
                 numbers();
@@ -2464,7 +2576,6 @@ const Slop = (() => {
                 if (!res.ok) throw new Error(out || res.statusText);
                 text.version = Number(out);
                 saved = { ...JSON.parse(body), version: text.version };
-                undo = null;
                 keepDraft();
                 savedStatus();
             } catch (e) {
@@ -2479,14 +2590,16 @@ const Slop = (() => {
             numbers();
             changed();
             keepDraft();
-            if (!stale && !undo) status(unsaved() ? 'Not saved yet' : 'No changes since the last save', unsaved() ? 'dirty' : '');
+            if (!stale && !noted) status(unsaved() ? 'Not saved yet' : 'No changes since the last save', unsaved() ? 'dirty' : '');
         }
         function reset() {
             store.drop(LOCAL);
             session.drop(DRAFT);
             text = JSON.parse(original);
             saved = JSON.parse(original);
-            undo = null;
+            undos.length = 0;
+            redos.length = 0;
+            noted = false;
             applyColors();
             changed();
             render();
@@ -2502,10 +2615,10 @@ const Slop = (() => {
         };
         addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 's' && !aside.hidden) { e.preventDefault(); save(); }
-            // ⌘Z outside a text undoes the last switch or mark (a text's own ⌘Z undoes its typing)
-            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'z' && undo && !aside.hidden && !e.target.closest?.('textarea, input, [contenteditable="true"]')) {
+            // ⌘Z and ⌘⇧Z outside a text too (a text's are caught there; a name or a link's address keeps its own)
+            if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z' && !aside.hidden && !e.defaultPrevented && !e.target.closest?.('textarea, input, [contenteditable="true"]')) {
                 e.preventDefault();
-                statusEl.querySelector('.sp-link')?.click();
+                step(!e.shiftKey);
             }
         });
         body.addEventListener('pointerdown', (e) => {
@@ -2628,7 +2741,7 @@ const Slop = (() => {
                 open(true);
                 status('Unsaved changes from before the reload', 'dirty', {
                     label: 'Discard',
-                    run: () => { text = JSON.parse(JSON.stringify(saved)); session.drop(DRAFT); applyColors(); changed(); render(); savedStatus(); },
+                    run: () => { text = JSON.parse(JSON.stringify(saved)); undos.length = 0; redos.length = 0; noted = false; session.drop(DRAFT); applyColors(); changed(); render(); savedStatus(); },
                 });
             }
         } catch { /* none */ }

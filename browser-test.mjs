@@ -664,6 +664,100 @@ try {
     });
     await p.close();
 
+    // ---------- one history for everything, and a heading's switch ----------
+    p = await open(`file://${await fixture()}`);
+    const selected = () => p.evaluate(() => getSelection().toString());
+    await check('on the page: ⌘Z takes back a mark and selects its words again, after typing too; ⌘⇧Z does it again', async () => {
+        await p.click('[data-slop="how.p1"]');
+        await p.keyboard.press('Meta+ArrowDown');
+        await p.keyboard.type(' Mine');
+        await p.keyboard.press('Meta+ArrowUp');
+        for (let i = 0; i < 3; i++) await p.keyboard.press('Shift+ArrowRight');
+        await p.waitForFunction(() => document.querySelector('.slop-float .sp-assign-label').textContent === 'Mark selection as');
+        await p.click('.slop-float .sp-as:has-text("Data")');
+        const marked = [{ data: 'The' }, ' agent wrote this.', { me: ' Mine' }];
+        assert.deepEqual(await get(p, 'how.p1'), marked);
+        // shown at once, and still selected, to mark as something else
+        assert.match(await p.innerHTML('[data-slop="how.p1"]'), /^<span class="slop-data">The<\/span>/);
+        assert.equal(await selected(), 'The');
+        assert.equal(await p.textContent('.slop-float .sp-assign-label'), 'Mark selection as');
+        await p.keyboard.press('Meta+z');
+        assert.deepEqual(await get(p, 'how.p1'), ['The agent wrote this.', { me: ' Mine' }]);
+        assert.equal(await selected(), 'The');
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        await p.keyboard.press('Meta+Shift+z');
+        await p.keyboard.press('Meta+Shift+z');
+        assert.deepEqual(await get(p, 'how.p1'), marked);
+        assert.equal(await selected(), 'The');
+        assert.match(await p.textContent('.sp-status'), /Marked the selection as Data/);
+        await p.keyboard.press('Meta+z');
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+
+    await check('in a box: ⌘Z takes back a mark and selects its words again; ⌘⇧Z does it again', async () => {
+        await panel(p);
+        await all(p);
+        const ta = p.locator(`${field('how.p1')} textarea`);
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(4, 9)); // "agent"
+        await p.locator(`${field('how.p1')} .sp-as`, { hasText: 'Data' }).click();
+        assert.deepEqual(await get(p, 'how.p1'), ['The ', { data: 'agent' }, ' wrote this.']);
+        const box = () => p.evaluate(() => { const a = document.activeElement; return [a.closest('.sp-field')?.dataset.path, a.selectionStart, a.selectionEnd]; });
+        assert.deepEqual(await box(), ['how.p1', 4, 9]); // still selected
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        assert.deepEqual(await box(), ['how.p1', 4, 9]);
+        await p.keyboard.press('Meta+Shift+z');
+        assert.deepEqual(await get(p, 'how.p1'), ['The ', { data: 'agent' }, ' wrote this.']);
+        await p.keyboard.press('Meta+z');
+        // on the Slop tab, which is drawn again after a mark, too
+        await p.click('.sp-tabs [data-tab="slop"]');
+        await ta.click();
+        await ta.evaluate((t) => t.setSelectionRange(4, 9));
+        await p.locator(`${field('how.p1')} .sp-as`, { hasText: 'Data' }).click();
+        assert.deepEqual(await box(), ['how.p1', 4, 9]);
+        await p.keyboard.press('Meta+z');
+        await all(p);
+    });
+
+    await check('⌘⇧Z with no text focused does the last switch again', async () => {
+        await p.click(`${field('how.p1')} .sp-toggle`);
+        await p.keyboard.press('Meta+z');
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+        assert.match(await p.textContent('.sp-status'), /^Undone: Approved .* · Redo$/);
+        await p.keyboard.press('Meta+Shift+z');
+        assert.deepEqual(await get(p, 'how.p1'), [{ ok: 'The agent wrote this.' }]);
+        await p.keyboard.press('Meta+z');
+        await p.click('.sp-mode');
+    });
+
+    await check('a heading\'s switch covers its section, and switched back takes back only what it approved', async () => {
+        const slop = (at) => p.evaluate((x) => Slop.makeup([Slop.get(x)]).counts.ai ?? 0, at);
+        await p.click('[data-slop="how.p1"]');
+        await p.click('.slop-float .sp-toggle'); // this paragraph on its own, first
+        assert.deepEqual(await get(p, 'how.p1'), [{ ok: 'The agent wrote this.' }]);
+        await p.mouse.click(5, 400); // away: the row goes, and no longer covers the heading
+        await p.waitForSelector('.slop-float', { state: 'hidden' });
+        await p.click('[data-slop="how.title"]');
+        assert.match(await p.getAttribute('.slop-float .sp-toggle', 'title'), /^This heading and 3 texts under it: Slop/);
+        const before = await p.evaluate(() => JSON.stringify(Slop.text));
+        await p.click('.slop-float .sp-toggle');
+        for (const at of ['how.title', 'how.p1', 'how.p2', 'how.photo']) assert.equal(await slop(at), 0, at);
+        assert.equal(await get(p, 'list.title'), 'A list'); // another group
+        assert.match(await p.textContent('.sp-status'), /and 3 texts under it/);
+        await p.click('.slop-float .sp-toggle');
+        assert.equal(await p.evaluate(() => JSON.stringify(Slop.text)), before);
+        await p.click('.slop-float .sp-toggle');
+        await p.mouse.click(5, 400);
+        await p.waitForSelector('.slop-float', { state: 'hidden' });
+        await p.click('[data-slop="how.p1"]');
+        await p.click('.slop-float .sp-toggle'); // a switch with nothing of its own to take back makes it all slop
+        assert.equal(await get(p, 'how.p1'), 'The agent wrote this.');
+    });
+    await p.close();
+
     // ---------- the browser editor after the author publishes a new version ----------
     const republished = await fixture();
     p = await open(`file://${republished}`);
